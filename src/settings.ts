@@ -37,7 +37,7 @@ export const DEFAULT_SETTINGS: InvoiceForgeSettings = {
 	licenseKey: "",
 	isPro: false,
 	licenseEmail: "",
-	purchaseUrl: "https://buymeacoffee.com/invoiceforge",
+	purchaseUrl: "https://buymeacoffee.com/vaultspotlight",
 
 	business: DEFAULT_BUSINESS,
 	clients: [],
