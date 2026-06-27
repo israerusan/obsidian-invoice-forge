@@ -121,13 +121,16 @@ export default class InvoiceForgePlugin extends Plugin {
 			return;
 		}
 		const html = renderInvoiceHtml(invoice, this.settings.business);
-		const win = window.open("", "_blank");
+		// Render via a Blob URL rather than document.write (which Obsidian disallows).
+		const url = URL.createObjectURL(new Blob([html], { type: "text/html" }));
+		const win = window.open(url, "_blank");
 		if (!win) {
-			new Notice("Could not open a print window (popup blocked).");
+			URL.revokeObjectURL(url);
+			new Notice("Could not open a print window (popup blocked). Use Ctrl/Cmd+P to print to PDF.");
 			return;
 		}
-		win.document.write(html);
-		win.document.close();
+		// Free the object URL once the window has had time to load it.
+		window.setTimeout(() => URL.revokeObjectURL(url), 60000);
 	}
 
 	private async ensureFolder(path: string): Promise<void> {

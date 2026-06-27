@@ -3273,13 +3273,14 @@ ${summary}`, 8e3);
       return;
     }
     const html = renderInvoiceHtml(invoice, this.settings.business);
-    const win = window.open("", "_blank");
+    const url = URL.createObjectURL(new Blob([html], { type: "text/html" }));
+    const win = window.open(url, "_blank");
     if (!win) {
-      new import_obsidian6.Notice("Could not open a print window (popup blocked).");
+      URL.revokeObjectURL(url);
+      new import_obsidian6.Notice("Could not open a print window (popup blocked). Use Ctrl/Cmd+P to print to PDF.");
       return;
     }
-    win.document.write(html);
-    win.document.close();
+    window.setTimeout(() => URL.revokeObjectURL(url), 6e4);
   }
   async ensureFolder(path) {
     const existing = this.app.vault.getAbstractFileByPath(path);
