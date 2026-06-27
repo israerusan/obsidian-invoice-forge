@@ -1,0 +1,37 @@
+{
+	"name": "obsidian-invoice-forge",
+	"version": "1.0.0",
+	"description": "Turn billable hours logged in your notes into client invoices — for Obsidian",
+	"main": "main.js",
+	"scripts": {
+		"dev": "node esbuild.config.mjs",
+		"build": "node esbuild.config.mjs production",
+		"test": "node tests/_build.mjs && node tests/duration.test.mjs && node tests/parser.test.mjs && node tests/invoice.test.mjs && node tests/license.test.mjs",
+		"license:keygen": "node scripts/generate-keypair.mjs",
+		"license:generate": "node scripts/generate-license.mjs"
+	},
+	"keywords": [
+		"obsidian",
+		"plugin",
+		"invoice",
+		"billing",
+		"freelance",
+		"time-tracking"
+	],
+	"author": "iavil",
+	"license": "MIT",
+	"type": "module",
+	"devDependencies": {
+		"@types/node": "^24.0.0",
+		"esbuild": "^0.28.1",
+		"obsidian": "1.7.2",
+		"tslib": "^2.8.1",
+		"typescript": "^5.8.3"
+	},
+	"dependencies": {
+		"tweetnacl": "^1.0.3"
+	},
+	"allowScripts": {
+		"esbuild@0.28.1": true
+	}
+}

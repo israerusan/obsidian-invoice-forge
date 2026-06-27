@@ -1,0 +1,9 @@
+node_modules/
+main.js.map
+.DS_Store
+scripts/.license-private.key
+tests/.testable.mjs
+TEST_LICENSE.txt
+GUMROAD_LISTING.txt
+PAYMENT_OPTIONS.txt
+*.log

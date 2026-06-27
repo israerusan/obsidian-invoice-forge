@@ -1,0 +1,21 @@
+Subject: Your Invoice Forge Pro license key
+
+Hi,
+
+Thanks for buying Invoice Forge Pro! Here's your license key:
+
+    {PASTE_KEY_HERE}
+
+To activate:
+1. Open Obsidian → Settings → Invoice Forge
+2. Paste the key into "License key"
+3. Pro unlocks immediately — PDF/print export, tax & multi-currency,
+   billing reminders, payment tracking, and branding.
+
+The key is verified offline (no account, server, or subscription) and includes
+lifetime updates to Pro features. Keep this email so you can re-activate on a new
+device.
+
+Questions or issues? Just reply to this email.
+
+— Invoice Forge
