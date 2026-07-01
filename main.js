@@ -2973,8 +2973,8 @@ function renderInvoiceMarkdown(inv, business) {
   lines.push("---");
   lines.push(`invoice: "${inv.number}"`);
   lines.push(`client: "${escapeYaml(inv.clientName)}"`);
-  lines.push(`issued: ${inv.issueDate}`);
-  lines.push(`due: ${inv.dueDate}`);
+  lines.push(`issued: "${inv.issueDate}"`);
+  lines.push(`due: "${inv.dueDate}"`);
   lines.push(`total: ${inv.total}`);
   lines.push(`currency: ${inv.currency}`);
   lines.push(`status: ${inv.status}`);

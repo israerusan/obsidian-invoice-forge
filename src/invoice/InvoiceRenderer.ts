@@ -8,8 +8,11 @@ export function renderInvoiceMarkdown(inv: Invoice, business: BusinessProfile): 
 	lines.push("---");
 	lines.push(`invoice: "${inv.number}"`);
 	lines.push(`client: "${escapeYaml(inv.clientName)}"`);
-	lines.push(`issued: ${inv.issueDate}`);
-	lines.push(`due: ${inv.dueDate}`);
+	// Quote the dates so YAML keeps them as strings. Unquoted YYYY-MM-DD parses
+	// as a date/timestamp in some readers, and ReminderManager requires a string
+	// (typeof fm.due === "string") — unquoted, reminders would silently never fire.
+	lines.push(`issued: "${inv.issueDate}"`);
+	lines.push(`due: "${inv.dueDate}"`);
 	lines.push(`total: ${inv.total}`);
 	lines.push(`currency: ${inv.currency}`);
 	lines.push(`status: ${inv.status}`);
