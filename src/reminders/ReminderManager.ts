@@ -38,15 +38,15 @@ export class ReminderManager {
 		const due: string[] = [];
 		const overdue: string[] = [];
 		for (const file of files) {
-			const fm = this.plugin.app.metadataCache.getFileCache(file)?.frontmatter as
-				| Record<string, unknown>
-				| undefined;
+			const fm = this.plugin.app.metadataCache.getFileCache(file)?.frontmatter;
 			if (!fm || fm.invoice === undefined) continue;
-			const status = String(fm.status ?? "unpaid");
+			const status = typeof fm.status === "string" ? fm.status : "unpaid";
 			if (status === "paid") continue;
 			const dueDate = typeof fm.due === "string" ? fm.due : "";
 			if (!dueDate) continue;
-			const label = `${fm.invoice} (${fm.client ?? "?"}) due ${dueDate}`;
+			const invoiceLabel = fmString(fm.invoice);
+			const clientLabel = fmString(fm.client) || "?";
+			const label = `${invoiceLabel} (${clientLabel}) due ${dueDate}`;
 			if (dueDate < today) overdue.push(label);
 			else if (dueDate <= soon) due.push(label);
 		}
@@ -58,6 +58,14 @@ export class ReminderManager {
 			new Notice(`Invoices due soon:\n${due.join("\n")}`, 8000);
 		}
 	}
+}
+
+// Frontmatter values are untyped (any); only render strings/numbers, never an
+// object's "[object Object]" default stringification, into reminder labels.
+function fmString(value: unknown): string {
+	if (typeof value === "string") return value;
+	if (typeof value === "number") return String(value);
+	return "";
 }
 
 function addDays(d: Date, days: number): Date {

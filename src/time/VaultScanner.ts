@@ -47,8 +47,8 @@ export class VaultScanner {
 
 	// Date priority: frontmatter `date` → daily-note date in filename → file mtime.
 	private resolveNoteDate(file: TFile, cache: ReturnType<App["metadataCache"]["getFileCache"]>): string {
-		const fm = cache?.frontmatter as Record<string, unknown> | undefined;
-		const fmDate = fm?.date;
+		const fm = cache?.frontmatter;
+		const fmDate: unknown = fm?.date;
 		if (typeof fmDate === "string" && DAILY_NOTE_DATE_RE.test(fmDate)) {
 			return (DAILY_NOTE_DATE_RE.exec(fmDate) as RegExpExecArray)[1];
 		}

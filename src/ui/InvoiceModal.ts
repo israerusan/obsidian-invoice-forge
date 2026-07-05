@@ -23,9 +23,15 @@ export class InvoiceModal extends Modal {
 		this.periodEnd = toISODate(end);
 	}
 
-	async onOpen(): Promise<void> {
+	onOpen(): void {
 		this.titleEl.setText("Create invoice");
 		this.contentEl.createEl("p", { text: "Scanning vault for #billable entries…", cls: "if-muted" });
+		// Modal.onOpen is synchronous (void); run the async vault scan detached and
+		// re-render when it resolves rather than returning a promise from the override.
+		void this.loadEntries();
+	}
+
+	private async loadEntries(): Promise<void> {
 		this.entries = await this.plugin.scanner.scan(this.plugin.settings.clients);
 		this.render();
 	}

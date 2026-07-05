@@ -91,7 +91,7 @@ export function parseBillableLine(rawLine: string, ctx: ParseContext): ParsedEnt
 	// Description: whatever's left after removing tags and tokens.
 	const description = working
 		.replace(/(^|\s)#billable\b/gi, " ")
-		.replace(/(^|\s)#[A-Za-z0-9_\/-]+/g, " ")
+		.replace(/(^|\s)#[A-Za-z0-9_/-]+/g, " ")
 		.replace(/\s+/g, " ")
 		.trim();
 
