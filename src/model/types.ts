@@ -29,6 +29,7 @@ export interface TimeEntry {
 	description: string;
 	sourcePath: string; // note the entry came from
 	line: number; // 0-based line number in the source note
+	raw: string; // exact source line at scan time — used to detect drift before billing
 }
 
 export interface InvoiceLine {

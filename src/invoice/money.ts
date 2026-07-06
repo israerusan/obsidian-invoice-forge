@@ -12,5 +12,9 @@ export function formatMoney(amount: number, currency: string): string {
 }
 
 export function round2(n: number): number {
-	return Math.round((n + Number.EPSILON) * 100) / 100;
+	if (!Number.isFinite(n)) return 0;
+	// Sign-aware so negative half-values (e.g. a credit line) round symmetrically
+	// with positives: round2(-1.005) === -1.01, matching round2(1.005) === 1.01.
+	const sign = n < 0 ? -1 : 1;
+	return (sign * Math.round((Math.abs(n) + Number.EPSILON) * 100)) / 100;
 }

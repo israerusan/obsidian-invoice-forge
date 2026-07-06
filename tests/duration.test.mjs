@@ -21,4 +21,17 @@ assert.equal(parseTimeRange("11:00-11:00"), null);
 assert.equal(parseTimeRange("09:99-10:00"), null);
 assert.equal(parseDuration("09:00-11:30"), 2.5); // parseDuration delegates to range
 
+// Out-of-range hours in a time range are rejected (not silently coerced).
+assert.equal(parseTimeRange("25:00-26:00"), null, "hours > 23 rejected");
+assert.equal(parseTimeRange("24:00-24:30"), null);
+
+// A malformed minutes component is rejected rather than normalized.
+assert.equal(parseDuration("1h90m"), null, "1h90m is a typo, not 2.5h");
+assert.equal(parseDuration("2h59m"), 2.98);
+
+// A field with trailing junk must NOT parse (anchored HM_RE).
+assert.equal(parseDuration("2h typo"), null, "'2h typo' is not a valid duration");
+assert.equal(parseDuration("2h "), 2, "trailing space is tolerated");
+assert.equal(parseDuration("x2h"), null);
+
 console.log("duration tests passed");

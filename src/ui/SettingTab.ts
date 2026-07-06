@@ -1,6 +1,6 @@
-import { App, PluginSettingTab, Setting } from "obsidian";
+import { App, Notice, PluginSettingTab, Setting } from "obsidian";
 import type InvoiceForgePlugin from "../main";
-import { DEFAULT_SETTINGS } from "../settings";
+import { DEFAULT_SETTINGS, PRO_PRICE } from "../settings";
 import { ClientEditModal } from "./ClientEditModal";
 
 export class InvoiceForgeSettingTab extends PluginSettingTab {
@@ -14,6 +14,18 @@ export class InvoiceForgeSettingTab extends PluginSettingTab {
 	display(): void {
 		const { containerEl } = this;
 		containerEl.empty();
+
+		// ---- First-run onboarding ----
+		const s = this.plugin.settings;
+		const freshInstall = !s.business.name.trim() && s.clients.length === 0 && s.nextSeq === 1;
+		if (freshInstall) {
+			const help = containerEl.createDiv({ cls: "if-onboarding" });
+			help.createEl("p", { text: "Welcome to Invoice Forge. Three steps to your first invoice:" });
+			const ol = help.createEl("ol");
+			ol.createEl("li", { text: "Set your business name and default rate below." });
+			ol.createEl("li", { text: "In any note, add a line like: - #billable #client/acme 2h Work done" });
+			ol.createEl("li", { text: "Run the Create invoice command (or the ribbon icon), pick the client and dates." });
+		}
 
 		// ---- License ----
 		new Setting(containerEl)
@@ -39,10 +51,14 @@ export class InvoiceForgeSettingTab extends PluginSettingTab {
 			});
 		} else {
 			status.createEl("p", {
-				text: "Free tier active. Upgrade to unlock PDF/print export, tax & multi-currency, billing reminders, and payment tracking.",
+				text: `Free tier active. Pro (${PRO_PRICE}) unlocks PDF/print export, tax & multi-currency, billing reminders, and your logo on invoices.`,
 			});
-			const link = status.createEl("a", { text: "Get Invoice Forge Pro", href: this.plugin.settings.purchaseUrl });
+			const link = status.createEl("a", {
+				text: `Get Invoice Forge Pro — ${PRO_PRICE}`,
+				href: this.plugin.settings.purchaseUrl,
+			});
 			link.setAttr("target", "_blank");
+			link.setAttr("rel", "noopener");
 		}
 
 		new Setting(containerEl)
@@ -74,7 +90,12 @@ export class InvoiceForgeSettingTab extends PluginSettingTab {
 			.setName("Default hourly rate")
 			.addText((t) =>
 				t.setValue(String(biz.defaultRate)).onChange((v) => {
-					biz.defaultRate = Number(v) || 0;
+					const n = Number(v);
+					if (v.trim() !== "" && (!Number.isFinite(n) || n < 0)) {
+						new Notice("Default rate must be a number of 0 or more.");
+						return;
+					}
+					biz.defaultRate = v.trim() === "" ? 0 : n;
 					void this.plugin.saveSettings();
 				})
 			);
@@ -150,7 +171,14 @@ export class InvoiceForgeSettingTab extends PluginSettingTab {
 		// ---- Pro: tax & branding ----
 		new Setting(containerEl).setName("Tax & branding (Pro)").setHeading();
 		this.proText(containerEl, "Tax label", biz.taxLabel, "e.g. VAT, GST, Sales tax", (v) => (biz.taxLabel = v));
-		this.proText(containerEl, "Default tax rate %", String(biz.taxRate), "0 for none", (v) => (biz.taxRate = Number(v) || 0));
+		this.proText(containerEl, "Default tax rate %", String(biz.taxRate), "0 for none", (v) => {
+			const n = Number(v);
+			if (v.trim() !== "" && (!Number.isFinite(n) || n < 0 || n > 100)) {
+				new Notice("Tax rate must be between 0 and 100.");
+				return;
+			}
+			biz.taxRate = v.trim() === "" ? 0 : n;
+		});
 		this.proText(containerEl, "Logo URL or path", biz.logoUrl, "Shown on PDF/print invoices", (v) => (biz.logoUrl = v));
 
 		// ---- Pro: reminders ----
@@ -178,7 +206,9 @@ export class InvoiceForgeSettingTab extends PluginSettingTab {
 				);
 		} else {
 			reminderSetting.settingEl.addClass("if-locked");
-			reminderSetting.descEl.appendText(" (Pro)");
+			reminderSetting.descEl.appendText(
+				this.plugin.settings.reminderEnabled ? " (Pro — saved as on, resumes when you upgrade)" : " (Pro)"
+			);
 		}
 
 		// ---- Clients ----

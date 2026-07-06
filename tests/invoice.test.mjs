@@ -1,5 +1,14 @@
 import assert from "assert";
-import { buildInvoice, filterEntries, formatInvoiceNumber, addDays } from "./.testable.mjs";
+import {
+	buildInvoice,
+	filterEntries,
+	formatInvoiceNumber,
+	addDays,
+	summarizeEntries,
+	resolveRates,
+	round2,
+	isValidISODate,
+} from "./.testable.mjs";
 
 const business = {
 	name: "Me Inc",
@@ -65,5 +74,48 @@ assert.equal(formatInvoiceNumber("{YY}{MM}{DD}-{seq}", 12, d), "260626-12");
 
 // addDays
 assert.equal(addDays("2026-06-30", 14), "2026-07-14");
+
+// isValidISODate — real calendar dates only
+assert.ok(isValidISODate("2026-06-30"));
+assert.ok(!isValidISODate("2026-99-40"), "impossible month/day rejected");
+assert.ok(!isValidISODate("2026-02-30"), "Feb 30 rejected");
+assert.ok(!isValidISODate("2026-6-3"), "non-zero-padded rejected");
+assert.ok(!isValidISODate("not-a-date"));
+
+// --- round2 is sign-aware and finite-safe ---
+assert.equal(round2(1.005), 1.01);
+assert.equal(round2(-1.005), -1.01, "negative half rounds symmetrically");
+assert.equal(round2(NaN), 0, "NaN collapses to 0, never $NaN");
+assert.equal(round2(Infinity), 0);
+
+// --- Preview parity: summarizeEntries must equal what buildInvoice produces ---
+// Sub-hour entries at a non-integer rate is exactly where round-once vs
+// round-per-line used to diverge by a penny.
+const pennyEntries = [
+	{ clientId: null, clientName: "X", date: "2026-06-01", hours: 0.17, rate: null, description: "a", sourcePath: "p", line: 0 },
+	{ clientId: null, clientName: "X", date: "2026-06-02", hours: 0.17, rate: null, description: "b", sourcePath: "p", line: 1 },
+];
+const pennyBiz = { ...business, defaultRate: 92.5, taxRate: 0 };
+const totals = summarizeEntries(pennyEntries, 92.5, 0);
+const pennyInv = buildInvoice(pennyEntries, null, pennyBiz, {
+	number: "INV-P", issueDate: "2026-06-30", periodStart: "2026-06-01", periodEnd: "2026-06-30", dueInDays: 14, isPro: false,
+});
+assert.equal(totals.subtotal, pennyInv.subtotal, "preview subtotal equals invoice subtotal");
+assert.equal(totals.subtotal, 31.46, "per-line rounding: 15.73 + 15.73");
+
+// --- A NaN client rate must NOT produce a NaN invoice ---
+const nanClient = { id: "n", name: "N", email: "", address: "", defaultRate: NaN, currency: null, taxRate: null };
+const nanInv = buildInvoice(
+	[{ clientId: "n", clientName: "N", date: "2026-06-01", hours: 2, rate: null, description: "x", sourcePath: "p", line: 0 }],
+	nanClient,
+	business,
+	{ number: "INV-N", issueDate: "2026-06-30", periodStart: "2026-06-01", periodEnd: "2026-06-30", dueInDays: 14, isPro: false }
+);
+assert.ok(Number.isFinite(nanInv.total), "a NaN rate must not reach the invoice total");
+
+// --- resolveRates gating ---
+assert.equal(resolveRates(acme, business, false).currency, "USD", "free forces business currency");
+assert.equal(resolveRates(acme, business, false).taxRate, 0, "free forces zero tax");
+assert.equal(resolveRates(acme, business, true).currency, "EUR", "pro honors client currency");
 
 console.log("invoice tests passed");

@@ -2273,6 +2273,7 @@ module.exports = __toCommonJS(main_exports);
 var import_obsidian6 = require("obsidian");
 
 // src/settings.ts
+var PRO_PRICE = "$19 one-time";
 var DEFAULT_BUSINESS = {
   name: "",
   email: "",
@@ -2288,7 +2289,8 @@ var DEFAULT_SETTINGS = {
   licenseKey: "",
   isPro: false,
   licenseEmail: "",
-  purchaseUrl: "https://buymeacoffee.com/vaultspotlight",
+  purchaseUrl: "https://buymeacoffee.com/invoiceforge",
+  pendingInvoice: null,
   business: DEFAULT_BUSINESS,
   clients: [],
   invoiceFolder: "Invoices",
@@ -2314,6 +2316,7 @@ var ClientEditModal = class extends import_obsidian.Modal {
     super(app);
     this.plugin = plugin;
     this.isNew = client === null;
+    this.originalId = client ? client.id : null;
     this.onSave = onSave;
     this.working = client ? { ...client } : { id: "", name: "", email: "", address: "", defaultRate: null, currency: null, taxRate: null };
   }
@@ -2334,7 +2337,7 @@ var ClientEditModal = class extends import_obsidian.Modal {
     new import_obsidian.Setting(contentEl).setName("Default hourly rate").setDesc("Blank uses the business default rate.").addText(
       (t) => {
         var _a, _b;
-        return t.setPlaceholder(String(this.plugin.settings.business.defaultRate)).setValue((_b = (_a = this.working.defaultRate) == null ? void 0 : _a.toString()) != null ? _b : "").onChange((v) => this.working.defaultRate = v.trim() ? Number(v) : null);
+        return t.setPlaceholder(String(this.plugin.settings.business.defaultRate)).setValue((_b = (_a = this.working.defaultRate) == null ? void 0 : _a.toString()) != null ? _b : "").onChange((v) => this.working.defaultRate = parseNumberOrNull(v));
       }
     );
     new import_obsidian.Setting(contentEl).setName("Currency").setDesc("ISO code (USD, EUR, GBP\u2026). Blank uses the business default.").addText(
@@ -2348,7 +2351,7 @@ var ClientEditModal = class extends import_obsidian.Modal {
       taxSetting.addText(
         (t) => {
           var _a, _b;
-          return t.setValue((_b = (_a = this.working.taxRate) == null ? void 0 : _a.toString()) != null ? _b : "").onChange((v) => this.working.taxRate = v.trim() ? Number(v) : null);
+          return t.setValue((_b = (_a = this.working.taxRate) == null ? void 0 : _a.toString()) != null ? _b : "").onChange((v) => this.working.taxRate = parseNumberOrNull(v));
         }
       );
     } else {
@@ -2363,14 +2366,22 @@ var ClientEditModal = class extends import_obsidian.Modal {
       new import_obsidian.Notice("Client needs a name.");
       return;
     }
+    if (this.working.defaultRate !== null && this.working.defaultRate < 0) {
+      new import_obsidian.Notice("Default rate must be 0 or more.");
+      return;
+    }
+    if (this.working.taxRate !== null && (this.working.taxRate < 0 || this.working.taxRate > 100)) {
+      new import_obsidian.Notice("Tax rate must be between 0 and 100.");
+      return;
+    }
     if (!this.working.id) this.working.id = slugify(this.working.name);
     else this.working.id = slugify(this.working.id);
     const clients = this.plugin.settings.clients;
-    const idx = clients.findIndex((c) => c.id === this.working.id);
-    if (this.isNew && idx !== -1) {
+    if (clients.some((c) => c.id === this.working.id && c.id !== this.originalId)) {
       new import_obsidian.Notice(`A client with slug "${this.working.id}" already exists.`);
       return;
     }
+    const idx = this.originalId ? clients.findIndex((c) => c.id === this.originalId) : -1;
     if (idx !== -1) clients[idx] = this.working;
     else clients.push(this.working);
     void this.plugin.saveSettings().then(() => {
@@ -2379,6 +2390,12 @@ var ClientEditModal = class extends import_obsidian.Modal {
     });
   }
 };
+function parseNumberOrNull(value) {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const n = Number(trimmed);
+  return Number.isFinite(n) ? n : null;
+}
 
 // src/ui/SettingTab.ts
 var InvoiceForgeSettingTab = class extends import_obsidian2.PluginSettingTab {
@@ -2389,6 +2406,16 @@ var InvoiceForgeSettingTab = class extends import_obsidian2.PluginSettingTab {
   display() {
     const { containerEl } = this;
     containerEl.empty();
+    const s = this.plugin.settings;
+    const freshInstall = !s.business.name.trim() && s.clients.length === 0 && s.nextSeq === 1;
+    if (freshInstall) {
+      const help = containerEl.createDiv({ cls: "if-onboarding" });
+      help.createEl("p", { text: "Welcome to Invoice Forge. Three steps to your first invoice:" });
+      const ol = help.createEl("ol");
+      ol.createEl("li", { text: "Set your business name and default rate below." });
+      ol.createEl("li", { text: "In any note, add a line like: - #billable #client/acme 2h Work done" });
+      ol.createEl("li", { text: "Run the Create invoice command (or the ribbon icon), pick the client and dates." });
+    }
     new import_obsidian2.Setting(containerEl).setName("License key").setDesc("Enter your Pro license key. Verified offline \u2014 no account or server required.").addText(
       (text) => text.setPlaceholder("payload.signature").setValue(this.plugin.settings.licenseKey).onChange((value) => {
         this.plugin.settings.licenseKey = value;
@@ -2405,10 +2432,14 @@ var InvoiceForgeSettingTab = class extends import_obsidian2.PluginSettingTab {
       });
     } else {
       status.createEl("p", {
-        text: "Free tier active. Upgrade to unlock PDF/print export, tax & multi-currency, billing reminders, and payment tracking."
+        text: `Free tier active. Pro (${PRO_PRICE}) unlocks PDF/print export, tax & multi-currency, billing reminders, and your logo on invoices.`
       });
-      const link = status.createEl("a", { text: "Get Invoice Forge Pro", href: this.plugin.settings.purchaseUrl });
+      const link = status.createEl("a", {
+        text: `Get Invoice Forge Pro \u2014 ${PRO_PRICE}`,
+        href: this.plugin.settings.purchaseUrl
+      });
       link.setAttr("target", "_blank");
+      link.setAttr("rel", "noopener");
     }
     new import_obsidian2.Setting(containerEl).setName("Purchase page URL").setDesc("Link shown for Pro upgrades.").addText(
       (text) => text.setPlaceholder(DEFAULT_SETTINGS.purchaseUrl).setValue(this.plugin.settings.purchaseUrl).onChange((value) => {
@@ -2428,7 +2459,12 @@ var InvoiceForgeSettingTab = class extends import_obsidian2.PluginSettingTab {
     );
     new import_obsidian2.Setting(containerEl).setName("Default hourly rate").addText(
       (t) => t.setValue(String(biz.defaultRate)).onChange((v) => {
-        biz.defaultRate = Number(v) || 0;
+        const n = Number(v);
+        if (v.trim() !== "" && (!Number.isFinite(n) || n < 0)) {
+          new import_obsidian2.Notice("Default rate must be a number of 0 or more.");
+          return;
+        }
+        biz.defaultRate = v.trim() === "" ? 0 : n;
         void this.plugin.saveSettings();
       })
     );
@@ -2483,7 +2519,14 @@ var InvoiceForgeSettingTab = class extends import_obsidian2.PluginSettingTab {
     );
     new import_obsidian2.Setting(containerEl).setName("Tax & branding (Pro)").setHeading();
     this.proText(containerEl, "Tax label", biz.taxLabel, "e.g. VAT, GST, Sales tax", (v) => biz.taxLabel = v);
-    this.proText(containerEl, "Default tax rate %", String(biz.taxRate), "0 for none", (v) => biz.taxRate = Number(v) || 0);
+    this.proText(containerEl, "Default tax rate %", String(biz.taxRate), "0 for none", (v) => {
+      const n = Number(v);
+      if (v.trim() !== "" && (!Number.isFinite(n) || n < 0 || n > 100)) {
+        new import_obsidian2.Notice("Tax rate must be between 0 and 100.");
+        return;
+      }
+      biz.taxRate = v.trim() === "" ? 0 : n;
+    });
     this.proText(containerEl, "Logo URL or path", biz.logoUrl, "Shown on PDF/print invoices", (v) => biz.logoUrl = v);
     new import_obsidian2.Setting(containerEl).setName("Billing reminders (Pro)").setHeading();
     const reminderSetting = new import_obsidian2.Setting(containerEl).setName("Enable due-date reminders").setDesc("Notifies you of unpaid invoices that are due soon or overdue.");
@@ -2505,7 +2548,9 @@ var InvoiceForgeSettingTab = class extends import_obsidian2.PluginSettingTab {
       );
     } else {
       reminderSetting.settingEl.addClass("if-locked");
-      reminderSetting.descEl.appendText(" (Pro)");
+      reminderSetting.descEl.appendText(
+        this.plugin.settings.reminderEnabled ? " (Pro \u2014 saved as on, resumes when you upgrade)" : " (Pro)"
+      );
     }
     new import_obsidian2.Setting(containerEl).setName("Clients").setHeading();
     new import_obsidian2.Setting(containerEl).setName("Add client").setDesc("Configured clients get default rate, currency, address, and #client/<slug> resolution.").addButton(
@@ -2568,7 +2613,9 @@ function formatMoney(amount, currency) {
   }
 }
 function round2(n) {
-  return Math.round((n + Number.EPSILON) * 100) / 100;
+  if (!Number.isFinite(n)) return 0;
+  const sign = n < 0 ? -1 : 1;
+  return sign * Math.round((Math.abs(n) + Number.EPSILON) * 100) / 100;
 }
 
 // src/invoice/InvoiceBuilder.ts
@@ -2582,24 +2629,39 @@ function filterEntries(entries, client, clientName, periodStart, periodEnd) {
     return e.clientName.toLowerCase() === targetName;
   }).filter((e) => e.date >= periodStart && e.date <= periodEnd).sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : 0);
 }
-function buildInvoice(entries, client, business, opts) {
-  var _a, _b, _c, _d;
-  const baseRate = (_a = client && client.defaultRate) != null ? _a : business.defaultRate;
-  const currency = opts.isPro ? client && client.currency || business.currency : business.currency;
+function finite(n, fallback) {
+  return Number.isFinite(n) ? n : fallback;
+}
+function summarizeEntries(entries, baseRate, taxRate) {
+  const safeBase = finite(baseRate, 0);
+  const safeTaxRate = finite(taxRate, 0);
   const lines = entries.map((e) => {
-    var _a2;
-    const rate = (_a2 = e.rate) != null ? _a2 : baseRate;
+    var _a;
+    const rate = finite((_a = e.rate) != null ? _a : safeBase, safeBase);
     const amount = round2(e.hours * rate);
     return { date: e.date, description: e.description || "Work", hours: e.hours, rate, amount };
   });
   const subtotal = round2(lines.reduce((sum, l) => sum + l.amount, 0));
-  const taxRate = opts.isPro ? (_b = client && client.taxRate) != null ? _b : business.taxRate : 0;
-  const taxAmount = round2(subtotal * taxRate / 100);
+  const taxAmount = round2(subtotal * safeTaxRate / 100);
   const total = round2(subtotal + taxAmount);
+  return { lines, subtotal, taxAmount, total };
+}
+function resolveRates(client, business, isPro) {
+  var _a, _b;
+  return {
+    baseRate: (_a = client && client.defaultRate) != null ? _a : business.defaultRate,
+    taxRate: isPro ? (_b = client && client.taxRate) != null ? _b : business.taxRate : 0,
+    currency: isPro ? client && client.currency || business.currency : business.currency
+  };
+}
+function buildInvoice(entries, client, business, opts) {
+  var _a, _b;
+  const { baseRate, taxRate, currency } = resolveRates(client, business, opts.isPro);
+  const { lines, subtotal, taxAmount, total } = summarizeEntries(entries, baseRate, taxRate);
   return {
     number: opts.number,
     clientId: client ? client.id : null,
-    clientName: client ? client.name : (_d = (_c = entries[0]) == null ? void 0 : _c.clientName) != null ? _d : "Unassigned",
+    clientName: client ? client.name : (_b = (_a = entries[0]) == null ? void 0 : _a.clientName) != null ? _b : "Unassigned",
     clientEmail: client ? client.email : "",
     clientAddress: client ? client.address : "",
     currency,
@@ -2616,6 +2678,13 @@ function buildInvoice(entries, client, business, opts) {
     notes: business.notes,
     status: "unpaid"
   };
+}
+function isValidISODate(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const [y, m, d] = value.split("-").map(Number);
+  if (m < 1 || m > 12 || d < 1 || d > 31) return false;
+  const dt = new Date(y, m - 1, d);
+  return dt.getFullYear() === y && dt.getMonth() === m - 1 && dt.getDate() === d;
 }
 function addDays(iso, days) {
   const d = /* @__PURE__ */ new Date(iso + "T00:00:00");
@@ -2644,9 +2713,12 @@ var InvoiceModal = class extends import_obsidian3.Modal {
     this.periodStart = toISODate(start);
     this.periodEnd = toISODate(end);
   }
-  async onOpen() {
+  onOpen() {
     this.titleEl.setText("Create invoice");
     this.contentEl.createEl("p", { text: "Scanning vault for #billable entries\u2026", cls: "if-muted" });
+    void this.loadEntries();
+  }
+  async loadEntries() {
     this.entries = await this.plugin.scanner.scan(this.plugin.settings.clients);
     this.render();
   }
@@ -2675,16 +2747,35 @@ var InvoiceModal = class extends import_obsidian3.Modal {
   render() {
     const { contentEl } = this;
     contentEl.empty();
+    const unparsed = this.plugin.scanner.lastUnparsed;
+    if (unparsed.length > 0) {
+      contentEl.createDiv({ cls: "if-warn" }).createEl("p", {
+        text: `\u26A0 ${unparsed.length} #billable line(s) couldn't be read (missing or invalid time) and were skipped. Fix the time on those lines so the work is billed.`
+      });
+    }
     const options = this.clientOptions();
     if (options.length === 0) {
       contentEl.createEl("p", {
-        text: "No #billable entries found. Add a line like:",
+        text: "No billable work found yet. Tag a line in any note with #billable and a time, then come back \u2014 for example:",
         cls: "if-muted"
       });
       contentEl.createEl("code", { text: "- #billable #client/acme 09:00-11:30 Built the thing" });
+      contentEl.createEl("p", {
+        text: "Tip: you don't need to set up a client first \u2014 a #client/<name> is billed at your default rate.",
+        cls: "if-muted"
+      });
+      new import_obsidian3.Setting(contentEl).addButton(
+        (b) => b.setButtonText("Insert an example line").setCta().onClick(() => {
+          void this.plugin.insertExampleNote();
+          this.close();
+        })
+      );
       return;
     }
     if (!this.clientKey) this.clientKey = options[0].key;
+    if (!this.plugin.settings.business.name.trim()) {
+      contentEl.createDiv({ cls: "if-muted" }).createEl("p", { text: "Tip: set your business name in Settings \u2192 Invoice Forge so it appears on the invoice." });
+    }
     new import_obsidian3.Setting(contentEl).setName("Client").setDesc("Configured clients use their default rate, currency, and address.").addDropdown((dd) => {
       for (const o of options) dd.addOption(o.key, o.label);
       dd.setValue(this.clientKey).onChange((v) => {
@@ -2707,10 +2798,12 @@ var InvoiceModal = class extends import_obsidian3.Modal {
     this.previewEl = contentEl.createDiv({ cls: "if-preview" });
     this.renderPreview();
     const actions = new import_obsidian3.Setting(contentEl);
-    actions.addButton(
-      (b) => b.setButtonText("Create invoice").setCta().onClick(() => void this.create())
-    );
-    if (this.plugin.settings.isPro) {
+    actions.addButton((b) => {
+      this.createBtn = b;
+      b.setButtonText("Create invoice").setCta().onClick(() => void this.create());
+      return b;
+    });
+    if (this.plugin.settings.isPro && !import_obsidian3.Platform.isMobile) {
       actions.addButton(
         (b) => b.setButtonText("Export PDF / print").onClick(() => {
           if (!this.lastInvoice) {
@@ -2720,32 +2813,64 @@ var InvoiceModal = class extends import_obsidian3.Modal {
           this.plugin.exportInvoiceHtml(this.lastInvoice);
         })
       );
+    } else if (this.plugin.settings.isPro) {
+      actions.descEl.setText("PDF / print export is available on desktop.");
     } else {
-      actions.descEl.setText("PDF / print export, tax, and reminders are Pro features.");
+      actions.descEl.setText(`PDF / print export, tax, and reminders are Pro features (${PRO_PRICE}). `);
+      const link = actions.descEl.createEl("a", {
+        text: "Unlock Invoice Forge Pro",
+        href: this.plugin.settings.purchaseUrl
+      });
+      link.setAttr("target", "_blank");
+      link.setAttr("rel", "noopener");
     }
   }
   renderPreview() {
-    var _a;
     if (!this.previewEl) return;
     this.previewEl.empty();
+    if (!isValidISODate(this.periodStart) || !isValidISODate(this.periodEnd)) {
+      this.previewEl.createEl("p", { text: "Enter both dates as a valid date (YYYY-MM-DD).", cls: "if-muted" });
+      return;
+    }
+    if (this.periodStart > this.periodEnd) {
+      this.previewEl.createEl("p", { text: "Start date must be on or before the end date.", cls: "if-muted" });
+      return;
+    }
     const { client, clientName } = this.resolveClient();
     const matched = filterEntries(this.entries, client, clientName, this.periodStart, this.periodEnd);
     if (matched.length === 0) {
-      this.previewEl.createEl("p", { text: "No entries match this client and date range.", cls: "if-muted" });
+      const allForClient = filterEntries(this.entries, client, clientName, "0000-01-01", "9999-12-31");
+      if (allForClient.length > 0) {
+        const dates = allForClient.map((e) => e.date).sort();
+        this.previewEl.createEl("p", {
+          text: `No entries in this period. This client has ${allForClient.length} entr${allForClient.length === 1 ? "y" : "ies"} dated ${dates[0]} to ${dates[dates.length - 1]} \u2014 widen the period.`,
+          cls: "if-muted"
+        });
+      } else {
+        this.previewEl.createEl("p", { text: "No entries match this client and date range.", cls: "if-muted" });
+      }
       return;
     }
     const totalHours = matched.reduce((s, e) => s + e.hours, 0);
-    const baseRate = (_a = client && client.defaultRate) != null ? _a : this.plugin.settings.business.defaultRate;
-    const currency = this.plugin.settings.isPro ? client && client.currency || this.plugin.settings.business.currency : this.plugin.settings.business.currency;
-    const subtotal = matched.reduce((s, e) => {
-      var _a2;
-      return s + e.hours * ((_a2 = e.rate) != null ? _a2 : baseRate);
-    }, 0);
-    this.previewEl.createEl("p", {
-      text: `${matched.length} entries \xB7 ${round22(totalHours)}h \xB7 subtotal ${formatMoney(round22(subtotal), currency)}`
-    });
+    const { baseRate, taxRate, currency } = resolveRates(client, this.plugin.settings.business, this.plugin.settings.isPro);
+    const totals = summarizeEntries(matched, baseRate, taxRate);
+    let text = `${matched.length} entries \xB7 ${round2(totalHours)}h \xB7 subtotal ${formatMoney(totals.subtotal, currency)}`;
+    if (totals.taxAmount > 0) {
+      text += ` \xB7 +${formatMoney(totals.taxAmount, currency)} tax \xB7 total ${formatMoney(totals.total, currency)}`;
+    }
+    this.previewEl.createEl("p", { text });
   }
   async create() {
+    var _a, _b;
+    if (!isValidISODate(this.periodStart) || !isValidISODate(this.periodEnd)) {
+      new import_obsidian3.Notice("Enter both dates as a valid date (YYYY-MM-DD).");
+      return;
+    }
+    if (this.periodStart > this.periodEnd) {
+      new import_obsidian3.Notice("Start date must be on or before the end date.");
+      return;
+    }
+    (_a = this.createBtn) == null ? void 0 : _a.setDisabled(true);
     const { client, clientName } = this.resolveClient();
     try {
       const { file, invoice } = await this.plugin.createInvoice(client, clientName, this.periodStart, this.periodEnd);
@@ -2758,12 +2883,11 @@ var InvoiceModal = class extends import_obsidian3.Modal {
       if (!this.plugin.settings.isPro) this.close();
     } catch (err) {
       new import_obsidian3.Notice(err instanceof Error ? err.message : "Could not create invoice.");
+    } finally {
+      (_b = this.createBtn) == null ? void 0 : _b.setDisabled(false);
     }
   }
 };
-function round22(n) {
-  return Math.round((n + Number.EPSILON) * 100) / 100;
-}
 
 // src/license/LicenseManager.ts
 var import_tweetnacl = __toESM(require_nacl_fast(), 1);
@@ -2816,19 +2940,19 @@ function base64ToBytes(value) {
 var import_obsidian4 = require("obsidian");
 
 // src/time/duration.ts
-var HM_RE = /(?:(\d+(?:\.\d+)?)\s*h)?\s*(?:(\d+)\s*m)?/i;
+var HM_RE = /^(?:(\d+(?:\.\d+)?)\s*h)?\s*(?:(\d+)\s*m)?$/i;
 var RANGE_RE = /^(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})$/;
 function parseTimeRange(token) {
   const m = RANGE_RE.exec(token.trim());
   if (!m) return null;
   const [, h1, m1, h2, m2] = m;
+  if (Number(h1) > 23 || Number(h2) > 23 || Number(m1) > 59 || Number(m2) > 59) return null;
   let start = Number(h1) * 60 + Number(m1);
   let end = Number(h2) * 60 + Number(m2);
-  if (Number(m1) > 59 || Number(m2) > 59) return null;
   if (end < start) end += 24 * 60;
   const minutes = end - start;
   if (minutes <= 0) return null;
-  return round23(minutes / 60);
+  return round2(minutes / 60);
 }
 function parseDuration(token) {
   const trimmed = token.trim();
@@ -2837,20 +2961,19 @@ function parseDuration(token) {
   if (range !== null) return range;
   if (/^\d+(?:\.\d+)?$/.test(trimmed)) {
     const n = Number(trimmed);
-    return n > 0 ? round23(n) : null;
+    return n > 0 ? round2(n) : null;
   }
   const m = HM_RE.exec(trimmed);
   if (!m || m[1] === void 0 && m[2] === void 0) return null;
   const hours = m[1] !== void 0 ? Number(m[1]) : 0;
   const mins = m[2] !== void 0 ? Number(m[2]) : 0;
+  if (m[1] !== void 0 && mins >= 60) return null;
   const total = hours + mins / 60;
-  return total > 0 ? round23(total) : null;
-}
-function round23(n) {
-  return Math.round((n + Number.EPSILON) * 100) / 100;
+  return total > 0 ? round2(total) : null;
 }
 
 // src/time/entryParser.ts
+var INVOICE_FIELD = "invoice";
 var BILLABLE_RE = /(^|\s)#billable\b/i;
 var CLIENT_TAG_RE = /(^|\s)#client\/([A-Za-z0-9_-]+)/;
 var INLINE_FIELD_RE = /\[([a-z]+)::\s*([^\]]+)\]/gi;
@@ -2867,6 +2990,7 @@ function parseBillableLine(rawLine, ctx) {
     fields[key.toLowerCase()] = value.trim();
     return " ";
   });
+  if (fields[INVOICE_FIELD]) return null;
   let clientId = null;
   let clientName = "";
   const clientTag = CLIENT_TAG_RE.exec(working);
@@ -2878,11 +3002,12 @@ function parseBillableLine(rawLine, ctx) {
     clientName = fields.client;
   }
   let date = ctx.defaultDate;
-  if (fields.date && DATE_RE.test(fields.date)) {
-    date = DATE_RE.exec(fields.date)[1];
+  const fieldDate = fields.date ? DATE_RE.exec(fields.date) : null;
+  if (fieldDate && isValidISODate(fieldDate[1])) {
+    date = fieldDate[1];
   } else {
     const inline = DATE_RE.exec(working);
-    if (inline) {
+    if (inline && isValidISODate(inline[1]) && !isProseDate(working, inline)) {
       date = inline[1];
       working = working.replace(inline[0], " ");
     }
@@ -2912,9 +3037,32 @@ function parseBillableLine(rawLine, ctx) {
     }
   }
   if (hours === null || hours <= 0) return null;
-  const description = working.replace(/(^|\s)#billable\b/gi, " ").replace(/(^|\s)#[A-Za-z0-9_\/-]+/g, " ").replace(/\s+/g, " ").trim();
+  const description = working.replace(/(^|\s)#billable\b/gi, " ").replace(/(^|\s)#[A-Za-z0-9_/-]+/g, " ").replace(/\s+/g, " ").trim();
   if (!clientName) clientName = "Unassigned";
   return { clientId, clientName, date, hours, rate, description };
+}
+function isProseDate(working, match) {
+  var _a, _b;
+  const before = working.slice(0, match.index).trimEnd();
+  const after = working.slice(match.index + match[0].length).trimStart();
+  const prevToken = (_a = before.split(/\s+/).pop()) != null ? _a : "";
+  const nextToken = (_b = after.split(/\s+/)[0]) != null ? _b : "";
+  const isPlainWord = (token) => /^[A-Za-z]{2,}$/.test(token);
+  return isPlainWord(prevToken) && isPlainWord(nextToken);
+}
+function markLineBilled(rawLine, invoiceNumber) {
+  if (!BILLABLE_RE.test(rawLine) || new RegExp(`\\[${INVOICE_FIELD}::`, "i").test(rawLine)) return rawLine;
+  return `${rawLine.trimEnd()} [${INVOICE_FIELD}:: ${invoiceNumber}]`;
+}
+function unmarkLineBilled(rawLine, invoiceNumber) {
+  const re = new RegExp(`\\s*\\[${INVOICE_FIELD}::\\s*${escapeRegExp(invoiceNumber)}\\s*\\]`, "gi");
+  return rawLine.replace(re, "");
+}
+function lineMatchesEntry(rawLine, entryRaw) {
+  return rawLine.trimEnd() === entryRaw.trimEnd();
+}
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 // src/time/VaultScanner.ts
@@ -2922,24 +3070,47 @@ var DAILY_NOTE_DATE_RE = /(\d{4}-\d{2}-\d{2})/;
 var VaultScanner = class {
   constructor(app) {
     this.app = app;
+    // Populated by the most recent scan(): #billable lines that looked billable
+    // but didn't parse. Callers can warn the user instead of losing the work.
+    this.lastUnparsed = [];
   }
   async scan(clients) {
-    var _a;
     const clientNames = {};
     for (const c of clients) clientNames[c.id] = c.name;
     const entries = [];
+    const unparsed = [];
     const files = this.app.vault.getMarkdownFiles();
     for (const file of files) {
-      const cache = this.app.metadataCache.getFileCache(file);
-      const tags = cache ? (_a = (0, import_obsidian4.getAllTags)(cache)) != null ? _a : [] : [];
       const content = await this.app.vault.cachedRead(file);
-      if (!/#billable/i.test(content) && !tags.includes("#billable")) continue;
+      if (!/#billable/i.test(content)) continue;
+      const cache = this.app.metadataCache.getFileCache(file);
       const defaultDate = this.resolveNoteDate(file, cache);
       const ctx = { defaultDate, clientNames };
       const fileLines = content.split(/\r?\n/);
+      let inFrontmatter = false;
+      let inFence = false;
       for (let i = 0; i < fileLines.length; i++) {
-        const parsed = parseBillableLine(fileLines[i], ctx);
-        if (!parsed) continue;
+        const line = fileLines[i];
+        if (i === 0 && line.trim() === "---") {
+          inFrontmatter = true;
+          continue;
+        }
+        if (inFrontmatter) {
+          if (line.trim() === "---") inFrontmatter = false;
+          continue;
+        }
+        if (/^\s*(```|~~~)/.test(line)) {
+          inFence = !inFence;
+          continue;
+        }
+        if (inFence) continue;
+        const parsed = parseBillableLine(line, ctx);
+        if (!parsed) {
+          if (/(^|\s)#billable\b/i.test(line) && !/\[invoice::/i.test(line)) {
+            unparsed.push({ path: file.path, line: i, text: line.trim() });
+          }
+          continue;
+        }
         entries.push({
           clientId: parsed.clientId,
           clientName: parsed.clientName,
@@ -2948,11 +3119,91 @@ var VaultScanner = class {
           rate: parsed.rate,
           description: parsed.description,
           sourcePath: file.path,
-          line: i
+          line: i,
+          raw: line
         });
       }
     }
+    this.lastUnparsed = unparsed;
     return entries;
+  }
+  groupByPath(entries) {
+    var _a;
+    const byPath = /* @__PURE__ */ new Map();
+    for (const entry of entries) {
+      const group = (_a = byPath.get(entry.sourcePath)) != null ? _a : [];
+      group.push(entry);
+      byPath.set(entry.sourcePath, group);
+    }
+    return byPath;
+  }
+  // Mark every source line billed, transactionally. Phase 1 validates that
+  // every line still exists AND still matches its entry (so drift can't mark
+  // the wrong line); nothing is written unless the whole set validates. Phase 2
+  // applies the marks per file (each file atomic via vault.process) and rolls
+  // back any files already written if a later file fails — so we never end up
+  // with some entries billed and others not.
+  async markBilled(entries, invoiceNumber) {
+    const byPath = this.groupByPath(entries);
+    for (const [path, fileEntries] of byPath) {
+      const file = this.app.vault.getAbstractFileByPath(path);
+      if (!(file instanceof import_obsidian4.TFile)) {
+        throw new Error(`Source note no longer exists: ${path}. Nothing was billed \u2014 rescan and try again.`);
+      }
+      const lines = (await this.app.vault.cachedRead(file)).split(/\r?\n/);
+      for (const entry of fileEntries) {
+        if (entry.line >= lines.length || !lineMatchesEntry(lines[entry.line], entry.raw)) {
+          throw new Error(`A billable line changed in ${path}. Nothing was billed \u2014 rescan and create the invoice again.`);
+        }
+      }
+    }
+    const written = [];
+    try {
+      for (const [path, fileEntries] of byPath) {
+        const file = this.app.vault.getAbstractFileByPath(path);
+        if (!(file instanceof import_obsidian4.TFile)) throw new Error(`Source note no longer exists: ${path}`);
+        await this.app.vault.process(file, (content) => {
+          const lines = content.split(/\r?\n/);
+          for (const entry of fileEntries) {
+            if (entry.line >= lines.length || !lineMatchesEntry(lines[entry.line], entry.raw)) {
+              throw new Error(`A billable line changed in ${path} during billing.`);
+            }
+            lines[entry.line] = markLineBilled(lines[entry.line], invoiceNumber);
+          }
+          return lines.join("\n");
+        });
+        written.push(path);
+      }
+    } catch (error) {
+      const failedRollback = await this.unmarkPaths(written, invoiceNumber);
+      if (failedRollback.length) {
+        throw new Error(
+          `${error instanceof Error ? error.message : String(error)} (could not fully undo markers in: ${failedRollback.join(", ")} \u2014 check these notes).`
+        );
+      }
+      throw error;
+    }
+  }
+  // Remove an invoice's markers from the given source notes (rollback / undo).
+  // Returns the paths that could NOT be cleaned so the caller can surface them.
+  async unmarkBilled(entries, invoiceNumber) {
+    return this.unmarkPaths([...this.groupByPath(entries).keys()], invoiceNumber);
+  }
+  async unmarkPaths(paths, invoiceNumber) {
+    const failed = [];
+    for (const path of paths) {
+      const file = this.app.vault.getAbstractFileByPath(path);
+      if (!(file instanceof import_obsidian4.TFile)) continue;
+      try {
+        await this.app.vault.process(
+          file,
+          (content) => content.split(/\r?\n/).map((line) => unmarkLineBilled(line, invoiceNumber)).join("\n")
+        );
+      } catch (e) {
+        failed.push(path);
+      }
+    }
+    return failed;
   }
   // Date priority: frontmatter `date` → daily-note date in filename → file mtime.
   resolveNoteDate(file, cache) {
@@ -3142,7 +3393,7 @@ var ReminderManager = class {
     }
   }
   async check() {
-    var _a, _b, _c;
+    var _a;
     if (!this.plugin.settings.isPro || !this.plugin.settings.reminderEnabled) return;
     const today = toISODate(/* @__PURE__ */ new Date());
     const soon = toISODate(addDays2(/* @__PURE__ */ new Date(), this.plugin.settings.reminderDaysBefore));
@@ -3153,11 +3404,13 @@ var ReminderManager = class {
     for (const file of files) {
       const fm = (_a = this.plugin.app.metadataCache.getFileCache(file)) == null ? void 0 : _a.frontmatter;
       if (!fm || fm.invoice === void 0) continue;
-      const status = String((_b = fm.status) != null ? _b : "unpaid");
+      const status = typeof fm.status === "string" ? fm.status : "unpaid";
       if (status === "paid") continue;
       const dueDate = typeof fm.due === "string" ? fm.due : "";
       if (!dueDate) continue;
-      const label = `${fm.invoice} (${(_c = fm.client) != null ? _c : "?"}) due ${dueDate}`;
+      const invoiceLabel = fmString(fm.invoice);
+      const clientLabel = fmString(fm.client) || "?";
+      const label = `${invoiceLabel} (${clientLabel}) due ${dueDate}`;
       if (dueDate < today) overdue.push(label);
       else if (dueDate <= soon) due.push(label);
     }
@@ -3171,6 +3424,11 @@ ${due.join("\n")}`, 8e3);
     }
   }
 };
+function fmString(value) {
+  if (typeof value === "string") return value;
+  if (typeof value === "number") return String(value);
+  return "";
+}
 function addDays2(d, days) {
   const copy = new Date(d);
   copy.setDate(copy.getDate() + days);
@@ -3182,6 +3440,7 @@ var InvoiceForgePlugin = class extends import_obsidian6.Plugin {
   constructor() {
     super(...arguments);
     this.settings = DEFAULT_SETTINGS;
+    this.creating = false;
   }
   async onload() {
     await this.loadSettings();
@@ -3205,7 +3464,10 @@ var InvoiceForgePlugin = class extends import_obsidian6.Plugin {
       callback: () => void this.previewHours()
     });
     this.addSettingTab(new InvoiceForgeSettingTab(this.app, this));
-    this.app.workspace.onLayoutReady(() => this.reminders.start());
+    this.app.workspace.onLayoutReady(() => {
+      void this.recoverPendingInvoice();
+      this.reminders.start();
+    });
   }
   onunload() {
     var _a;
@@ -3215,11 +3477,40 @@ var InvoiceForgePlugin = class extends import_obsidian6.Plugin {
     new InvoiceModal(this.app, this).open();
   }
   insertBillableEntry(editor) {
+    editor.replaceSelection(this.exampleBillableLine());
+  }
+  exampleBillableLine() {
     var _a, _b;
-    const slug = (_b = (_a = this.settings.clients[0]) == null ? void 0 : _a.id) != null ? _b : "client";
+    const slug = (_b = (_a = this.settings.clients[0]) == null ? void 0 : _a.id) != null ? _b : "acme";
     const today = toISODate(/* @__PURE__ */ new Date());
-    editor.replaceSelection(`- #billable #client/${slug} 1h ${today} Describe the work
-`);
+    return `- #billable #client/${slug} 1h [date:: ${today}] Describe the work
+`;
+  }
+  // Onboarding on-ramp: drop a working example #billable line where the user can
+  // see it — into the active note if one is open, otherwise a fresh log note.
+  async insertExampleNote() {
+    var _a;
+    const line = this.exampleBillableLine();
+    const editor = (_a = this.app.workspace.activeEditor) == null ? void 0 : _a.editor;
+    if (editor) {
+      editor.replaceSelection(line);
+      new import_obsidian6.Notice("Inserted an example #billable line \u2014 edit it, then run Create invoice.");
+      return;
+    }
+    const path = (0, import_obsidian6.normalizePath)("Billable log.md");
+    const existing = this.app.vault.getAbstractFileByPath(path);
+    let file;
+    if (existing instanceof import_obsidian6.TFile) {
+      file = existing;
+      await this.app.vault.process(file, (content) => `${content.replace(/\s*$/, "")}
+${line}`);
+    } else {
+      file = await this.app.vault.create(path, `# Billable log
+
+${line}`);
+    }
+    await this.app.workspace.getLeaf(true).openFile(file);
+    new import_obsidian6.Notice("Added an example #billable line in \u201CBillable log\u201D \u2014 edit it, then run Create invoice.");
   }
   getClient(id) {
     var _a;
@@ -3235,41 +3526,134 @@ var InvoiceForgePlugin = class extends import_obsidian6.Plugin {
     }
     const totals = /* @__PURE__ */ new Map();
     for (const e of entries) totals.set(e.clientName, ((_a = totals.get(e.clientName)) != null ? _a : 0) + e.hours);
-    const summary = [...totals.entries()].sort((a, b) => b[1] - a[1]).map(([name, hours]) => `${name}: ${hours}h`).join("\n");
+    const summary = [...totals.entries()].sort((a, b) => b[1] - a[1]).map(([name, hours]) => `${name}: ${round2(hours)}h`).join("\n");
+    const skipped = this.scanner.lastUnparsed.length;
+    const warn = skipped > 0 ? `
+\u26A0 ${skipped} #billable line(s) skipped (fix their time).` : "";
     new import_obsidian6.Notice(`Unbilled hours:
-${summary}`, 8e3);
+${summary}${warn}`, 8e3);
   }
-  // Core: scan → build → write invoice note. Returns the created file.
+  // Core: scan → build → mark source entries → write invoice note. The order and
+  // locking make double-billing impossible: we reserve a unique number, then
+  // mark entries (validated + atomic + rolled back on failure), and create the
+  // note LAST so a failure falls toward "nothing billed" (retryable) rather than
+  // "billed but re-billable" (double charge).
   async createInvoice(client, clientName, periodStart, periodEnd) {
-    const all = await this.scanner.scan(this.settings.clients);
-    const entries = filterEntries(all, client, clientName, periodStart, periodEnd);
-    if (entries.length === 0) {
-      throw new Error("No billable entries match that client and date range.");
+    if (this.creating) {
+      throw new Error("An invoice is already being created \u2014 please wait for it to finish.");
     }
-    const issueDate = toISODate(/* @__PURE__ */ new Date());
-    const number = formatInvoiceNumber(this.settings.numberTemplate, this.settings.nextSeq, /* @__PURE__ */ new Date(issueDate + "T00:00:00"));
-    const opts = {
-      number,
-      issueDate,
-      periodStart,
-      periodEnd,
-      dueInDays: this.settings.dueInDays,
-      isPro: this.settings.isPro
-    };
-    const invoice = buildInvoice(entries, client, this.settings.business, opts);
-    const markdown = renderInvoiceMarkdown(invoice, this.settings.business);
-    const folder = (0, import_obsidian6.normalizePath)(this.settings.invoiceFolder || "Invoices");
-    await this.ensureFolder(folder);
-    const path = (0, import_obsidian6.normalizePath)(`${folder}/${safeFileName(number)}.md`);
-    const file = await this.app.vault.create(path, markdown);
-    this.settings.nextSeq += 1;
+    this.creating = true;
+    try {
+      const all = await this.scanner.scan(this.settings.clients);
+      const entries = filterEntries(all, client, clientName, periodStart, periodEnd);
+      if (entries.length === 0) {
+        throw new Error("No billable entries match that client and date range.");
+      }
+      const issueDate = toISODate(/* @__PURE__ */ new Date());
+      const { number, path, folder } = this.reserveInvoicePath(issueDate);
+      await this.saveSettings();
+      const opts = {
+        number,
+        issueDate,
+        periodStart,
+        periodEnd,
+        dueInDays: this.settings.dueInDays,
+        isPro: this.settings.isPro
+      };
+      const invoice = buildInvoice(entries, client, this.settings.business, opts);
+      const markdown = renderInvoiceMarkdown(invoice, this.settings.business);
+      this.settings.pendingInvoice = {
+        number,
+        path,
+        markdown,
+        entries: entries.map((e) => ({ sourcePath: e.sourcePath, line: e.line, raw: e.raw }))
+      };
+      await this.saveSettings();
+      await this.scanner.markBilled(entries, number);
+      await this.ensureFolder(folder);
+      let file;
+      try {
+        file = await this.app.vault.create(path, markdown);
+      } catch (error) {
+        const failed = await this.scanner.unmarkBilled(entries, number);
+        this.settings.pendingInvoice = null;
+        await this.saveSettings();
+        if (failed.length) {
+          throw new Error(
+            `${error instanceof Error ? error.message : String(error)} (and could not undo markers in: ${failed.join(", ")} \u2014 check these notes).`
+          );
+        }
+        throw error;
+      }
+      this.settings.pendingInvoice = null;
+      await this.saveSettings();
+      return { file, invoice };
+    } finally {
+      this.creating = false;
+    }
+  }
+  // Replay a journaled invoice left behind by a crash: create the note if it's
+  // missing and mark any entries that weren't marked, then clear the journal.
+  async recoverPendingInvoice() {
+    const pending = this.settings.pendingInvoice;
+    if (!pending) return;
+    if (typeof pending.path !== "string" || typeof pending.markdown !== "string" || !Array.isArray(pending.entries)) {
+      this.settings.pendingInvoice = null;
+      await this.saveSettings();
+      return;
+    }
+    try {
+      const existing = this.app.vault.getAbstractFileByPath(pending.path);
+      if (!(existing instanceof import_obsidian6.TFile)) {
+        const slash = pending.path.lastIndexOf("/");
+        if (slash > 0) await this.ensureFolder(pending.path.slice(0, slash));
+        await this.app.vault.create(pending.path, pending.markdown);
+      }
+      for (const entry of pending.entries) {
+        const file = this.app.vault.getAbstractFileByPath(entry.sourcePath);
+        if (!(file instanceof import_obsidian6.TFile)) continue;
+        await this.app.vault.process(file, (content) => {
+          const lines = content.split(/\r?\n/);
+          if (entry.line < lines.length && lineMatchesEntry(lines[entry.line], entry.raw)) {
+            lines[entry.line] = markLineBilled(lines[entry.line], pending.number);
+          }
+          return lines.join("\n");
+        });
+      }
+      new import_obsidian6.Notice(`Recovered an interrupted invoice: ${pending.number}.`);
+    } catch (e) {
+      return;
+    }
+    this.settings.pendingInvoice = null;
     await this.saveSettings();
-    return { file, invoice };
+  }
+  // Reserve the next invoice number and a non-colliding file path. Increments
+  // nextSeq once; if that number's file already exists, the FILE name is
+  // suffixed (the number is preserved) so we never overwrite an existing note.
+  reserveInvoicePath(issueDate) {
+    const folder = (0, import_obsidian6.normalizePath)(this.settings.invoiceFolder || "Invoices");
+    const number = formatInvoiceNumber(
+      this.settings.numberTemplate,
+      this.settings.nextSeq,
+      /* @__PURE__ */ new Date(issueDate + "T00:00:00")
+    );
+    this.settings.nextSeq += 1;
+    let path = (0, import_obsidian6.normalizePath)(`${folder}/${safeFileName(number)}.md`);
+    let suffix = 2;
+    while (this.app.vault.getAbstractFileByPath(path)) {
+      path = (0, import_obsidian6.normalizePath)(`${folder}/${safeFileName(number)} ${suffix}.md`);
+      suffix += 1;
+    }
+    return { number, path, folder };
   }
   // Pro: open a printable HTML invoice in a new window (Print → Save as PDF).
   exportInvoiceHtml(invoice) {
     if (!this.settings.isPro) {
       new import_obsidian6.Notice("PDF / print export is a Pro feature.");
+      return;
+    }
+    if (import_obsidian6.Platform.isMobile) {
+      new import_obsidian6.Notice("PDF / print export is available on desktop only. Open this invoice on desktop to print or save as PDF.");
       return;
     }
     const html = renderInvoiceHtml(invoice, this.settings.business);
@@ -3303,8 +3687,17 @@ ${summary}`, 8e3);
   async loadSettings() {
     const data = await this.loadData();
     const loaded = data !== null && typeof data === "object" ? data : {};
+    for (const key of ["__proto__", "constructor", "prototype"]) {
+      delete loaded[key];
+    }
     this.settings = Object.assign({}, DEFAULT_SETTINGS, loaded);
-    this.settings.business = Object.assign({}, DEFAULT_SETTINGS.business, this.settings.business);
+    const business = loaded.business;
+    this.settings.business = Object.assign(
+      {},
+      DEFAULT_SETTINGS.business,
+      business && typeof business === "object" ? business : {}
+    );
+    this.settings.clients = Array.isArray(loaded.clients) ? loaded.clients.filter((c) => !!c && typeof c === "object").map(normalizeClient) : [];
   }
   async saveSettings() {
     await this.saveData(this.settings);
@@ -3312,4 +3705,17 @@ ${summary}`, 8e3);
 };
 function safeFileName(name) {
   return name.replace(/[\\/:*?"<>|]/g, "-");
+}
+function normalizeClient(raw) {
+  const str = (v) => typeof v === "string" ? v : "";
+  const numOrNull = (v) => typeof v === "number" && Number.isFinite(v) ? v : null;
+  return {
+    id: str(raw.id),
+    name: str(raw.name),
+    email: str(raw.email),
+    address: str(raw.address),
+    defaultRate: numOrNull(raw.defaultRate),
+    currency: typeof raw.currency === "string" ? raw.currency : null,
+    taxRate: numOrNull(raw.taxRate)
+  };
 }

@@ -106,7 +106,7 @@ job doesn't inherit the PR job's setup).
 
 ---
 
-## Rules we've actually been dinged on (Vault Spotlight)
+## Rules that commonly get flagged
 
 | Flagged | Rule | Fix |
 | --- | --- | --- |

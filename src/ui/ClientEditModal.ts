@@ -8,12 +8,14 @@ export class ClientEditModal extends Modal {
 	private plugin: InvoiceForgePlugin;
 	private working: Client;
 	private isNew: boolean;
+	private readonly originalId: string | null;
 	private onSave: () => void;
 
 	constructor(app: App, plugin: InvoiceForgePlugin, client: Client | null, onSave: () => void) {
 		super(app);
 		this.plugin = plugin;
 		this.isNew = client === null;
+		this.originalId = client ? client.id : null;
 		this.onSave = onSave;
 		this.working = client
 			? { ...client }
@@ -45,7 +47,7 @@ export class ClientEditModal extends Modal {
 				t
 					.setPlaceholder(String(this.plugin.settings.business.defaultRate))
 					.setValue(this.working.defaultRate?.toString() ?? "")
-					.onChange((v) => (this.working.defaultRate = v.trim() ? Number(v) : null))
+					.onChange((v) => (this.working.defaultRate = parseNumberOrNull(v)))
 			);
 		new Setting(contentEl)
 			.setName("Currency")
@@ -62,7 +64,7 @@ export class ClientEditModal extends Modal {
 			.setDesc(this.plugin.settings.isPro ? "Blank uses the business tax rate." : "Per-client tax is a Pro feature.");
 		if (this.plugin.settings.isPro) {
 			taxSetting.addText((t) =>
-				t.setValue(this.working.taxRate?.toString() ?? "").onChange((v) => (this.working.taxRate = v.trim() ? Number(v) : null))
+				t.setValue(this.working.taxRate?.toString() ?? "").onChange((v) => (this.working.taxRate = parseNumberOrNull(v)))
 			);
 		} else {
 			taxSetting.settingEl.addClass("if-locked");
@@ -81,15 +83,26 @@ export class ClientEditModal extends Modal {
 			new Notice("Client needs a name.");
 			return;
 		}
+		if (this.working.defaultRate !== null && this.working.defaultRate < 0) {
+			new Notice("Default rate must be 0 or more.");
+			return;
+		}
+		if (this.working.taxRate !== null && (this.working.taxRate < 0 || this.working.taxRate > 100)) {
+			new Notice("Tax rate must be between 0 and 100.");
+			return;
+		}
 		if (!this.working.id) this.working.id = slugify(this.working.name);
 		else this.working.id = slugify(this.working.id);
 
 		const clients = this.plugin.settings.clients;
-		const idx = clients.findIndex((c) => c.id === this.working.id);
-		if (this.isNew && idx !== -1) {
+		// Reject a slug that belongs to a DIFFERENT client — editing A's slug to
+		// B's must not overwrite B (and leave A orphaned).
+		if (clients.some((c) => c.id === this.working.id && c.id !== this.originalId)) {
 			new Notice(`A client with slug "${this.working.id}" already exists.`);
 			return;
 		}
+		// Replace the original record (matched by its id before the edit), or add.
+		const idx = this.originalId ? clients.findIndex((c) => c.id === this.originalId) : -1;
 		if (idx !== -1) clients[idx] = this.working;
 		else clients.push(this.working);
 
@@ -98,4 +111,14 @@ export class ClientEditModal extends Modal {
 			this.close();
 		});
 	}
+}
+
+// Blank -> null (fall back to business default). A non-numeric entry also -> null
+// rather than NaN, which would otherwise pass `??` and render "$NaN" on an
+// invoice sent to a client.
+function parseNumberOrNull(value: string): number | null {
+	const trimmed = value.trim();
+	if (!trimmed) return null;
+	const n = Number(trimmed);
+	return Number.isFinite(n) ? n : null;
 }
