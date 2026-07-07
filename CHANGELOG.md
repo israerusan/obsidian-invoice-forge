@@ -3,6 +3,39 @@
 All notable changes to Invoice Forge are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [1.1.2] - 2026-07-06
+
+Hardening release from a multi-round adversarial code review. No changes to the
+normal happy-path workflow; these fix edge cases that could mis-bill, crash, or
+silently drop work.
+
+### Fixed
+- **Billing integrity.** Crash-recovery now runs under the same lock as invoice
+  creation, so a replay and a user-triggered create can never both bill the same
+  entries; a failed marking step clears its journal so a fully-drifted batch can't
+  be resurrected as a phantom invoice; and a corrupt recovery journal can no
+  longer loop on every launch.
+- **Money & currency.** Invoice arithmetic rounds to each currency's own scale, so
+  zero-decimal currencies (JPY, KRW, …) no longer show line items that don't add
+  up to the total, and per-line rates round consistently with the amounts.
+- **Cross-client safety.** Two clients that share a display name but use different
+  `#client/<slug>` tags can no longer be billed onto each other.
+- **Parser.** `#billable-later`/`#billableish` are no longer treated as billable
+  (nested `#billable/<child>` still is); accented `#client/<slug>` tags are read
+  in full; a line with two clock ranges is surfaced instead of undercounted; a
+  negative or thousands-separated inline rate is handled correctly; and any
+  `[invoice:: …]` marker (even empty) blocks re-billing.
+- **Dates.** A just-saved note's frontmatter `date:` is read from fresh content,
+  so it isn't mis-dated to the file's modified time and dropped from its period.
+- **Resilience.** A corrupt or hand-edited `data.json` (non-string business
+  fields, a string `nextSeq`, etc.) is coerced on load instead of crashing the
+  settings tab or corrupting invoice numbering.
+- **Invoice notes.** Frontmatter and line-item cells escape backslashes/quotes, so
+  unusual client names or descriptions can't corrupt the YAML (which powers
+  Dataview status and reminders) or the line-item table.
+- **Settings.** The license-key field can be typed by hand without losing focus,
+  and the reminder scan uses the same normalized invoice folder as creation.
+
 ## [1.1.1] - 2026-07-06
 
 ### Changed
