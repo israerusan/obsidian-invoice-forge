@@ -153,6 +153,12 @@ const grouped = parseBillableLine("- #billable #client/acme 2h Work [rate:: 1,20
 assert.ok(grouped);
 assert.equal(grouped.rate, 1200, "a grouped rate 1,200 parses as 1200, not 1");
 
+// A pure-numeric #ref (not an Obsidian tag) stays in the description; a real tag
+// with a letter is still stripped.
+const withRef = parseBillableLine("- #billable #client/acme 2h fixed login, see issue #42 #urgent", ctx);
+assert.ok(withRef);
+assert.equal(withRef.description, "fixed login, see issue #42", "numeric #42 kept, #urgent stripped");
+
 // --- A whitespace-only invoice marker still suppresses re-billing ---
 assert.equal(parseBillableLine("- #billable #client/acme 2h Done [invoice:: ]", ctx), null, "empty marker blocks re-bill");
 
@@ -189,5 +195,17 @@ assert.equal(frontmatterDate('---\ndate: "2026-01-10"\ntags: [x]\n---\nbody'), "
 assert.equal(frontmatterDate("no frontmatter here"), null);
 assert.equal(frontmatterDate("---\ntitle: X\n---\nbody"), null, "no date key -> null");
 assert.equal(frontmatterDate("---\nnote: date is 2026-01-10 somewhere\n---"), null, "date only read from a date: key");
+// A nested/indented date: under another key is NOT the document date.
+assert.equal(
+	frontmatterDate("---\nmeeting:\n  date: 2025-01-02\ndate: 2026-07-06\n---\nbody"),
+	"2026-07-06",
+	"only the top-level date: key counts, not a nested one"
+);
+// An unterminated leading --- is not frontmatter, so a stray body date: is ignored.
+assert.equal(
+	frontmatterDate("---\narchived note\ndate: 2019-05-01 migrated\n- work 2h"),
+	null,
+	"unterminated frontmatter yields no date (won't pull a body date:)"
+);
 
 console.log("parser tests passed");

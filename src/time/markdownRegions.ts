@@ -18,9 +18,22 @@ const ISO_DATE_RE = /(\d{4}-\d{2}-\d{2})/;
 export function frontmatterDate(content: string): string | null {
 	const lines = content.split(/\r?\n/);
 	if (lines[0]?.trim() !== "---") return null;
+	// Require a CLOSING fence — an unterminated leading `---` is not frontmatter
+	// (same rule contentLines and Obsidian use); otherwise a stray body `date:`
+	// line would be read as the note date.
+	let end = -1;
 	for (let i = 1; i < lines.length; i++) {
-		if (lines[i].trim() === "---") break; // end of frontmatter
-		const m = /^date\s*:\s*(.+)$/.exec(lines[i].trim());
+		if (lines[i].trim() === "---") {
+			end = i;
+			break;
+		}
+	}
+	if (end === -1) return null;
+	// Only a TOP-LEVEL `date:` key (matched against the RAW line, so a line with
+	// any leading indentation — a nested mapping's `date:` under another key — is
+	// NOT treated as the document date).
+	for (let i = 1; i < end; i++) {
+		const m = /^date\s*:\s*(.+)$/.exec(lines[i]);
 		if (m) {
 			const iso = ISO_DATE_RE.exec(m[1]);
 			return iso ? iso[1] : null;

@@ -31,8 +31,10 @@ const TIME_RANGE_RE = /\b\d{1,2}:\d{2}\s*-\s*\d{1,2}:\d{2}\b/;
 const DURATION_RE = /\b\d+(?:\.\d+)?h(?:\s*\d+m)?\b|\b\d+m\b/i;
 const DATE_RE = /\b(\d{4}-\d{2}-\d{2})\b/;
 // Any tag, unicode-aware, so a leftover accented slug fragment doesn't leak into
-// the description after tag stripping.
-const ANY_TAG_G = /(^|\s)#[\p{L}\p{N}_/-]+/gu;
+// the description after tag stripping. The lookahead requires at least one
+// non-numeric char (matching Obsidian's tag rule), so a purely numeric token like
+// an issue reference "#42" is left in the description rather than deleted.
+const ANY_TAG_G = /(^|\s)#(?=[\p{L}\p{N}_/-]*[\p{L}_-])[\p{L}\p{N}_/-]+/gu;
 
 // Parse a single markdown line into a billable entry, or null if it isn't one.
 export function parseBillableLine(rawLine: string, ctx: ParseContext): ParsedEntry | null {

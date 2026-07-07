@@ -3012,7 +3012,7 @@ var INLINE_FIELD_RE = /\[([a-z]+)::\s*([^\]]+)\]/gi;
 var TIME_RANGE_RE = /\b\d{1,2}:\d{2}\s*-\s*\d{1,2}:\d{2}\b/;
 var DURATION_RE = /\b\d+(?:\.\d+)?h(?:\s*\d+m)?\b|\b\d+m\b/i;
 var DATE_RE = /\b(\d{4}-\d{2}-\d{2})\b/;
-var ANY_TAG_G = /(^|\s)#[\p{L}\p{N}_/-]+/gu;
+var ANY_TAG_G = /(^|\s)#(?=[\p{L}\p{N}_/-]*[\p{L}_-])[\p{L}\p{N}_/-]+/gu;
 function parseBillableLine(rawLine, ctx) {
   var _a, _b, _c;
   const line = rawLine.replace(/^[\s>*+-]*(?:\[[ xX/-]\]\s*)?/, "");
@@ -3112,9 +3112,16 @@ function frontmatterDate(content) {
   var _a;
   const lines = content.split(/\r?\n/);
   if (((_a = lines[0]) == null ? void 0 : _a.trim()) !== "---") return null;
+  let end = -1;
   for (let i = 1; i < lines.length; i++) {
-    if (lines[i].trim() === "---") break;
-    const m = /^date\s*:\s*(.+)$/.exec(lines[i].trim());
+    if (lines[i].trim() === "---") {
+      end = i;
+      break;
+    }
+  }
+  if (end === -1) return null;
+  for (let i = 1; i < end; i++) {
+    const m = /^date\s*:\s*(.+)$/.exec(lines[i]);
     if (m) {
       const iso = ISO_DATE_RE.exec(m[1]);
       return iso ? iso[1] : null;
