@@ -163,8 +163,17 @@ export default class InvoiceForgePlugin extends Plugin {
 			};
 			await this.saveSettings();
 
-			// Mark FIRST: if this throws, nothing is billed and no note exists yet.
-			await this.scanner.markBilled(entries, number);
+			// Mark FIRST: if this throws, markBilled has already validated + rolled
+			// back so nothing is billed and no note exists yet. Clear the journal
+			// before rethrowing — otherwise recovery would resurrect a phantom
+			// invoice on next launch (creating a note for work that was never billed).
+			try {
+				await this.scanner.markBilled(entries, number);
+			} catch (error) {
+				this.settings.pendingInvoice = null;
+				await this.saveSettings();
+				throw error;
+			}
 
 			// Create the note LAST: if it fails, entries were already marked, so
 			// unmark them to avoid silently losing that billable work.
@@ -313,6 +322,13 @@ export default class InvoiceForgePlugin extends Plugin {
 			DEFAULT_SETTINGS.business,
 			business && typeof business === "object" ? business : {}
 		);
+		// Coerce the numeric business fields: a hand-edited/mis-migrated data.json
+		// could store defaultRate/taxRate as strings, which would slip past the
+		// invoice builder's finite() guard and silently zero every line total.
+		const num = (v: unknown, fallback: number): number =>
+			typeof v === "number" && Number.isFinite(v) ? v : fallback;
+		this.settings.business.defaultRate = num(this.settings.business.defaultRate, DEFAULT_SETTINGS.business.defaultRate);
+		this.settings.business.taxRate = num(this.settings.business.taxRate, DEFAULT_SETTINGS.business.taxRate);
 		// A hand-edited/corrupt clients value must not crash the settings tab or scanner.
 		this.settings.clients = Array.isArray(loaded.clients)
 			? loaded.clients.filter((c): c is Record<string, unknown> => !!c && typeof c === "object").map(normalizeClient)

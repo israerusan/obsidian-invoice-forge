@@ -231,7 +231,16 @@ export class InvoiceModal extends Modal {
 			if (this.plugin.settings.openAfterCreate) {
 				await this.app.workspace.getLeaf(true).openFile(file);
 			}
-			if (!this.plugin.settings.isPro) this.close();
+			if (!this.plugin.settings.isPro) {
+				this.close();
+			} else {
+				// The Pro modal stays open so the user can Export PDF. Re-scan so the
+				// preview reflects the now-billed entries rather than a stale total,
+				// and a second Create doesn't hit a confusing "no entries" error
+				// against data that no longer matches the vault. lastInvoice persists
+				// across the re-render, so the Export button keeps working.
+				await this.loadEntries();
+			}
 		} catch (err) {
 			new Notice(err instanceof Error ? err.message : "Could not create invoice.");
 		} finally {

@@ -2419,28 +2419,19 @@ var InvoiceForgeSettingTab = class extends import_obsidian2.PluginSettingTab {
     new import_obsidian2.Setting(containerEl).setName("License key").setDesc("Enter your Pro license key. Verified offline \u2014 no account or server required.").addText(
       (text) => text.setPlaceholder("payload.signature").setValue(this.plugin.settings.licenseKey).onChange((value) => {
         this.plugin.settings.licenseKey = value;
+        const wasPro = this.plugin.settings.isPro;
         void this.plugin.refreshLicense().then(() => {
           this.plugin.reminders.start();
-          this.display();
+          if (this.plugin.settings.isPro !== wasPro) {
+            this.display();
+          } else {
+            this.renderLicenseStatus(status);
+          }
         });
       })
     );
     const status = containerEl.createDiv({ cls: "if-license-status" });
-    if (this.plugin.settings.isPro) {
-      status.createEl("p", {
-        text: `Pro active${this.plugin.settings.licenseEmail ? ` (${this.plugin.settings.licenseEmail})` : ""}.`
-      });
-    } else {
-      status.createEl("p", {
-        text: `Free tier active. Pro (${PRO_PRICE}) unlocks PDF/print export, tax & multi-currency, billing reminders, and your logo on invoices.`
-      });
-      const link = status.createEl("a", {
-        text: `Get Invoice Forge Pro \u2014 ${PRO_PRICE}`,
-        href: this.plugin.settings.purchaseUrl
-      });
-      link.setAttr("target", "_blank");
-      link.setAttr("rel", "noopener");
-    }
+    this.renderLicenseStatus(status);
     new import_obsidian2.Setting(containerEl).setName("Purchase page URL").setDesc("Link shown for Pro upgrades.").addText(
       (text) => text.setPlaceholder(DEFAULT_SETTINGS.purchaseUrl).setValue(this.plugin.settings.purchaseUrl).onChange((value) => {
         this.plugin.settings.purchaseUrl = value.trim() || DEFAULT_SETTINGS.purchaseUrl;
@@ -2573,6 +2564,27 @@ var InvoiceForgeSettingTab = class extends import_obsidian2.PluginSettingTab {
       );
     }
   }
+  // Render the Free/Pro status line into an existing container (cleared first),
+  // so a keystroke in the license field can refresh it without rebuilding — and
+  // stealing focus from — the whole settings tab.
+  renderLicenseStatus(status) {
+    status.empty();
+    if (this.plugin.settings.isPro) {
+      status.createEl("p", {
+        text: `Pro active${this.plugin.settings.licenseEmail ? ` (${this.plugin.settings.licenseEmail})` : ""}.`
+      });
+      return;
+    }
+    status.createEl("p", {
+      text: `Free tier active. Pro (${PRO_PRICE}) unlocks PDF/print export, tax & multi-currency, billing reminders, and your logo on invoices.`
+    });
+    const link = status.createEl("a", {
+      text: `Get Invoice Forge Pro \u2014 ${PRO_PRICE}`,
+      href: this.plugin.settings.purchaseUrl
+    });
+    link.setAttr("target", "_blank");
+    link.setAttr("rel", "noopener");
+  }
   textRow(containerEl, name, value, set) {
     new import_obsidian2.Setting(containerEl).setName(name).addText(
       (t) => t.setValue(value).onChange((v) => {
@@ -2624,7 +2636,7 @@ function filterEntries(entries, client, clientName, periodStart, periodEnd) {
   return entries.filter((e) => {
     if (client) {
       if (e.clientId === client.id) return true;
-      return e.clientName.toLowerCase() === client.name.toLowerCase();
+      return e.clientId === null && e.clientName.toLowerCase() === client.name.toLowerCase();
     }
     return e.clientName.toLowerCase() === targetName;
   }).filter((e) => e.date >= periodStart && e.date <= periodEnd).sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : 0);
@@ -2880,7 +2892,11 @@ var InvoiceModal = class extends import_obsidian3.Modal {
       if (this.plugin.settings.openAfterCreate) {
         await this.app.workspace.getLeaf(true).openFile(file);
       }
-      if (!this.plugin.settings.isPro) this.close();
+      if (!this.plugin.settings.isPro) {
+        this.close();
+      } else {
+        await this.loadEntries();
+      }
     } catch (err) {
       new import_obsidian3.Notice(err instanceof Error ? err.message : "Could not create invoice.");
     } finally {
@@ -3222,12 +3238,12 @@ var VaultScanner = class {
 function renderInvoiceMarkdown(inv, business) {
   const lines = [];
   lines.push("---");
-  lines.push(`invoice: "${inv.number}"`);
+  lines.push(`invoice: "${escapeYaml(inv.number)}"`);
   lines.push(`client: "${escapeYaml(inv.clientName)}"`);
   lines.push(`issued: "${inv.issueDate}"`);
   lines.push(`due: "${inv.dueDate}"`);
   lines.push(`total: ${inv.total}`);
-  lines.push(`currency: ${inv.currency}`);
+  lines.push(`currency: "${escapeYaml(inv.currency)}"`);
   lines.push(`status: ${inv.status}`);
   lines.push("tags: [invoice]");
   lines.push("---");
@@ -3358,10 +3374,10 @@ function nl2br(s) {
   return esc(s != null ? s : "").replace(/\n/g, "<br/>");
 }
 function escapePipe(s) {
-  return (s != null ? s : "").replace(/\|/g, "\\|");
+  return (s != null ? s : "").replace(/\\/g, "\\\\").replace(/\|/g, "\\|");
 }
 function escapeYaml(s) {
-  return (s != null ? s : "").replace(/"/g, '\\"');
+  return (s != null ? s : "").replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/[\r\n]+/g, " ");
 }
 
 // src/invoice/numbering.ts
@@ -3569,7 +3585,13 @@ ${summary}${warn}`, 8e3);
         entries: entries.map((e) => ({ sourcePath: e.sourcePath, line: e.line, raw: e.raw }))
       };
       await this.saveSettings();
-      await this.scanner.markBilled(entries, number);
+      try {
+        await this.scanner.markBilled(entries, number);
+      } catch (error) {
+        this.settings.pendingInvoice = null;
+        await this.saveSettings();
+        throw error;
+      }
       await this.ensureFolder(folder);
       let file;
       try {
@@ -3697,6 +3719,9 @@ ${summary}${warn}`, 8e3);
       DEFAULT_SETTINGS.business,
       business && typeof business === "object" ? business : {}
     );
+    const num = (v, fallback) => typeof v === "number" && Number.isFinite(v) ? v : fallback;
+    this.settings.business.defaultRate = num(this.settings.business.defaultRate, DEFAULT_SETTINGS.business.defaultRate);
+    this.settings.business.taxRate = num(this.settings.business.taxRate, DEFAULT_SETTINGS.business.taxRate);
     this.settings.clients = Array.isArray(loaded.clients) ? loaded.clients.filter((c) => !!c && typeof c === "object").map(normalizeClient) : [];
   }
   async saveSettings() {

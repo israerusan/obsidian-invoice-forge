@@ -8,6 +8,7 @@ import {
 	resolveRates,
 	round2,
 	isValidISODate,
+	renderInvoiceMarkdown,
 } from "./.testable.mjs";
 
 const business = {
@@ -35,6 +36,21 @@ const entries = [
 const filtered = filterEntries(entries, acme, "Acme Corp", "2026-06-01", "2026-06-30");
 assert.equal(filtered.length, 2);
 assert.deepEqual(filtered.map((e) => e.description), ["A", "B"]);
+
+// Cross-client guard: a second client that shares a display name but has a
+// DIFFERENT slug (its own #client/<slug>) must NOT be billed onto this client.
+// The name fallback applies only to unassigned (clientId === null) entries.
+const twins = [
+	{ clientId: "acme", clientName: "Acme Corp", date: "2026-06-05", hours: 2, rate: null, description: "mine", sourcePath: "x", line: 0 },
+	{ clientId: "acme-uk", clientName: "Acme Corp", date: "2026-06-06", hours: 9, rate: null, description: "THEIRS", sourcePath: "x", line: 1 },
+	{ clientId: null, clientName: "Acme Corp", date: "2026-06-07", hours: 1, rate: null, description: "unassigned-by-name", sourcePath: "x", line: 2 },
+];
+const mine = filterEntries(twins, acme, "Acme Corp", "2026-06-01", "2026-06-30");
+assert.deepEqual(
+	mine.map((e) => e.description),
+	["mine", "unassigned-by-name"],
+	"a same-name/different-slug client's work must not cross-bill"
+);
 
 // Pro invoice: client rate 100 for A, override 120 for B, EUR currency, 19% tax.
 const proInv = buildInvoice(filtered, acme, business, {
@@ -117,5 +133,32 @@ assert.ok(Number.isFinite(nanInv.total), "a NaN rate must not reach the invoice 
 assert.equal(resolveRates(acme, business, false).currency, "USD", "free forces business currency");
 assert.equal(resolveRates(acme, business, false).taxRate, 0, "free forces zero tax");
 assert.equal(resolveRates(acme, business, true).currency, "EUR", "pro honors client currency");
+
+// --- Frontmatter escaping: a client name with backslashes/quotes must not
+// corrupt the YAML block (which would silently break Dataview status + reminders). ---
+const nasty = buildInvoice(
+	[{ clientId: null, clientName: 'A\\B "Co"', date: "2026-06-01", hours: 1, rate: null, description: "a\\|b", sourcePath: "p", line: 0 }],
+	{ id: "x", name: 'A\\B "Co"', email: "", address: "", defaultRate: 50, currency: "USD", taxRate: 0 },
+	business,
+	{ number: 'INV-"1"', issueDate: "2026-06-01", periodStart: "2026-06-01", periodEnd: "2026-06-30", dueInDays: 14, isPro: false }
+);
+const md = renderInvoiceMarkdown(nasty, business);
+const fm = md.slice(md.indexOf("---") + 3, md.indexOf("---", 3));
+// Every double-quoted scalar must have balanced, properly escaped quotes: after
+// removing escaped \" and \\, no bare " should remain inside a value (a bare "
+// or a stray \ would corrupt the whole YAML block).
+for (const key of ["invoice", "client", "currency"]) {
+	const line = fm.split("\n").find((l) => l.startsWith(`${key}:`));
+	assert.ok(line, `frontmatter has ${key}`);
+	const val = line.slice(line.indexOf(":") + 1).trim();
+	assert.ok(val.startsWith('"') && val.endsWith('"'), `${key} is a quoted scalar`);
+	const inner = val.slice(1, -1).replace(/\\\\/g, "").replace(/\\"/g, "");
+	assert.ok(!inner.includes('"') && !inner.includes("\\"), `${key} has no unescaped quote/backslash`);
+}
+// A backslash in a table cell must be escaped BEFORE the pipe, so an authored
+// `\|` becomes `\\\|` (escaped backslash + escaped pipe) rather than `\\|`
+// (escaped backslash + a live column separator).
+const row = md.split("\n").find((l) => l.startsWith("| 2026-06-01 |"));
+assert.ok(row.includes("a\\\\\\|b"), "backslash escaped before pipe in line-item cell");
 
 console.log("invoice tests passed");

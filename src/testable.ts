@@ -4,3 +4,4 @@ export { markLineBilled, unmarkLineBilled, lineMatchesEntry, parseBillableLine }
 export { buildInvoice, filterEntries, summarizeEntries, resolveRates, addDays, toISODate, isValidISODate } from "./invoice/InvoiceBuilder";
 export { formatInvoiceNumber } from "./invoice/numbering";
 export { formatMoney, round2 } from "./invoice/money";
+export { renderInvoiceMarkdown } from "./invoice/InvoiceRenderer";

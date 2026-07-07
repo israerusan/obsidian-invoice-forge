@@ -37,29 +37,25 @@ export class InvoiceForgeSettingTab extends PluginSettingTab {
 					.setValue(this.plugin.settings.licenseKey)
 					.onChange((value) => {
 						this.plugin.settings.licenseKey = value;
+						const wasPro = this.plugin.settings.isPro;
 						void this.plugin.refreshLicense().then(() => {
 							this.plugin.reminders.start();
-							this.display();
+							// Rebuild the whole tab ONLY when Pro state flips (that
+							// changes which sections show). Rebuilding on every
+							// keystroke would destroy this text field mid-type, making
+							// the key impossible to enter by hand; refresh just the
+							// status line otherwise.
+							if (this.plugin.settings.isPro !== wasPro) {
+								this.display();
+							} else {
+								this.renderLicenseStatus(status);
+							}
 						});
 					})
 			);
 
 		const status = containerEl.createDiv({ cls: "if-license-status" });
-		if (this.plugin.settings.isPro) {
-			status.createEl("p", {
-				text: `Pro active${this.plugin.settings.licenseEmail ? ` (${this.plugin.settings.licenseEmail})` : ""}.`,
-			});
-		} else {
-			status.createEl("p", {
-				text: `Free tier active. Pro (${PRO_PRICE}) unlocks PDF/print export, tax & multi-currency, billing reminders, and your logo on invoices.`,
-			});
-			const link = status.createEl("a", {
-				text: `Get Invoice Forge Pro — ${PRO_PRICE}`,
-				href: this.plugin.settings.purchaseUrl,
-			});
-			link.setAttr("target", "_blank");
-			link.setAttr("rel", "noopener");
-		}
+		this.renderLicenseStatus(status);
 
 		new Setting(containerEl)
 			.setName("Purchase page URL")
@@ -241,6 +237,28 @@ export class InvoiceForgeSettingTab extends PluginSettingTab {
 				})
 			);
 		}
+	}
+
+	// Render the Free/Pro status line into an existing container (cleared first),
+	// so a keystroke in the license field can refresh it without rebuilding — and
+	// stealing focus from — the whole settings tab.
+	private renderLicenseStatus(status: HTMLElement): void {
+		status.empty();
+		if (this.plugin.settings.isPro) {
+			status.createEl("p", {
+				text: `Pro active${this.plugin.settings.licenseEmail ? ` (${this.plugin.settings.licenseEmail})` : ""}.`,
+			});
+			return;
+		}
+		status.createEl("p", {
+			text: `Free tier active. Pro (${PRO_PRICE}) unlocks PDF/print export, tax & multi-currency, billing reminders, and your logo on invoices.`,
+		});
+		const link = status.createEl("a", {
+			text: `Get Invoice Forge Pro — ${PRO_PRICE}`,
+			href: this.plugin.settings.purchaseUrl,
+		});
+		link.setAttr("target", "_blank");
+		link.setAttr("rel", "noopener");
 	}
 
 	private textRow(containerEl: HTMLElement, name: string, value: string, set: (v: string) => void): void {

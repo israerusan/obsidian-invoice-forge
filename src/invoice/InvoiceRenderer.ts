@@ -6,7 +6,7 @@ import { formatMoney } from "./money";
 export function renderInvoiceMarkdown(inv: Invoice, business: BusinessProfile): string {
 	const lines: string[] = [];
 	lines.push("---");
-	lines.push(`invoice: "${inv.number}"`);
+	lines.push(`invoice: "${escapeYaml(inv.number)}"`);
 	lines.push(`client: "${escapeYaml(inv.clientName)}"`);
 	// Quote the dates so YAML keeps them as strings. Unquoted YYYY-MM-DD parses
 	// as a date/timestamp in some readers, and ReminderManager requires a string
@@ -14,7 +14,7 @@ export function renderInvoiceMarkdown(inv: Invoice, business: BusinessProfile): 
 	lines.push(`issued: "${inv.issueDate}"`);
 	lines.push(`due: "${inv.dueDate}"`);
 	lines.push(`total: ${inv.total}`);
-	lines.push(`currency: ${inv.currency}`);
+	lines.push(`currency: "${escapeYaml(inv.currency)}"`);
 	lines.push(`status: ${inv.status}`);
 	lines.push("tags: [invoice]");
 	lines.push("---");
@@ -159,8 +159,17 @@ function nl2br(s: string): string {
 	return esc(s ?? "").replace(/\n/g, "<br/>");
 }
 function escapePipe(s: string): string {
-	return (s ?? "").replace(/\|/g, "\\|");
+	// Escape backslashes first so an authored `\|` can't leave a live column
+	// separator that shifts the table's cells.
+	return (s ?? "").replace(/\\/g, "\\\\").replace(/\|/g, "\\|");
 }
 function escapeYaml(s: string): string {
-	return (s ?? "").replace(/"/g, '\\"');
+	// This value is emitted as a YAML double-quoted scalar, where both `\` and `"`
+	// are escape characters. Escape backslash first, then the quote, and drop any
+	// CR/LF that would prematurely end the scalar and corrupt the whole block —
+	// which would silently break Dataview status queries and Pro due-date reminders.
+	return (s ?? "")
+		.replace(/\\/g, "\\\\")
+		.replace(/"/g, '\\"')
+		.replace(/[\r\n]+/g, " ");
 }

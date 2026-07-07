@@ -23,7 +23,11 @@ export function filterEntries(
 		.filter((e) => {
 			if (client) {
 				if (e.clientId === client.id) return true;
-				return e.clientName.toLowerCase() === client.name.toLowerCase();
+				// Fall back to a name match ONLY for entries with no explicit
+				// #client/<slug> (clientId === null). Matching a named-but-differently-
+				// slugged entry would mis-bill one client's work onto another client
+				// that happens to share a display name, at the wrong rate/currency.
+				return e.clientId === null && e.clientName.toLowerCase() === client.name.toLowerCase();
 			}
 			return e.clientName.toLowerCase() === targetName;
 		})
