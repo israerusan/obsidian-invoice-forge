@@ -119,6 +119,11 @@ assert.equal(parseBillableLine("- #billable-later #client/acme 2h Staged work", 
 assert.equal(parseBillableLine("- #billableish 2h", ctx), null, "#billableish is not billed");
 const stillBillable = parseBillableLine("- #billable #client/acme 2h Real", ctx);
 assert.ok(stillBillable && stillBillable.hours === 2, "plain #billable still bills");
+// A nested sub-tag #billable/<child> IS still billable (valid Obsidian sub-tag),
+// and its child does not leak into the description.
+const nested = parseBillableLine("- #billable/urgent #client/acme 2h Fixed login", ctx);
+assert.ok(nested && nested.hours === 2, "#billable/urgent still bills");
+assert.equal(nested.description, "Fixed login", "nested tag child does not leak into description");
 
 // --- Unicode #client slug is captured whole, not truncated at the first non-ASCII char ---
 const uni = parseBillableLine("- #billable #client/café 2h Fixed login", ctx);
@@ -126,12 +131,15 @@ assert.ok(uni);
 assert.equal(uni.clientId, "café", "accented slug captured in full");
 assert.equal(uni.description, "Fixed login", "no orphaned accent leaks into description");
 
-// --- Multiple loose duration tokens are ambiguous → surfaced (null), not undercounted ---
+// --- Two clock ranges on a line are ambiguous → surfaced (null) ---
 assert.equal(
-	parseBillableLine("- #billable #client/acme 1h morning 2h afternoon", ctx),
+	parseBillableLine("- #billable #client/acme 09:00-10:00 and 13:00-14:00 work", ctx),
 	null,
-	"two loose durations are rejected as ambiguous rather than billing only 1h"
+	"two clock ranges are ambiguous and surfaced, not billed as just the first"
 );
+// A bare duration inside description prose must NOT trigger false ambiguity.
+const proseDur = parseBillableLine("- #billable #client/acme 2h fixed the 30m timeout bug", ctx);
+assert.ok(proseDur && proseDur.hours === 2, "a duration mentioned in prose does not block billing");
 // An inline [time::] field is authoritative; a loose number in prose is fine.
 const withField = parseBillableLine("- #billable #client/acme [time:: 3h] reviewed 2 PRs", ctx);
 assert.ok(withField && withField.hours === 3, "inline time field is authoritative over loose prose");
@@ -140,6 +148,10 @@ assert.ok(withField && withField.hours === 3, "inline time field is authoritativ
 const negRate = parseBillableLine("- #billable #client/acme 2h Work [rate:: -50]", ctx);
 assert.ok(negRate);
 assert.equal(negRate.rate, null, "a negative rate is rejected, not billed as +50");
+// A thousands-separated rate is parsed whole, not truncated at the separator.
+const grouped = parseBillableLine("- #billable #client/acme 2h Work [rate:: 1,200]", ctx);
+assert.ok(grouped);
+assert.equal(grouped.rate, 1200, "a grouped rate 1,200 parses as 1200, not 1");
 
 // --- A whitespace-only invoice marker still suppresses re-billing ---
 assert.equal(parseBillableLine("- #billable #client/acme 2h Done [invoice:: ]", ctx), null, "empty marker blocks re-bill");

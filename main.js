@@ -3005,8 +3005,8 @@ function parseDuration(token) {
 
 // src/time/entryParser.ts
 var INVOICE_FIELD = "invoice";
-var BILLABLE_RE = /(^|\s)#billable(?![\w/-])/i;
-var BILLABLE_RE_G = /(^|\s)#billable(?![\w/-])/gi;
+var BILLABLE_RE = /(^|\s)#billable(?![\w-])/i;
+var BILLABLE_RE_G = /(^|\s)#billable(?![\w-])/gi;
 var CLIENT_TAG_RE = /(^|\s)#client\/([\p{L}\p{N}_-]+)/u;
 var INLINE_FIELD_RE = /\[([a-z]+)::\s*([^\]]+)\]/gi;
 var TIME_RANGE_RE = /\b\d{1,2}:\d{2}\s*-\s*\d{1,2}:\d{2}\b/;
@@ -3047,7 +3047,8 @@ function parseBillableLine(rawLine, ctx) {
   }
   let rate = null;
   if (fields.rate !== void 0) {
-    const rateMatch = /-?\d+(?:\.\d+)?/.exec(fields.rate);
+    const cleaned = fields.rate.replace(/[,_\s](?=\d)/g, "");
+    const rateMatch = /-?\d+(?:\.\d+)?/.exec(cleaned);
     const r = rateMatch ? Number(rateMatch[0]) : NaN;
     if (!Number.isNaN(r) && r > 0) rate = r;
   }
@@ -3074,10 +3075,10 @@ function parseBillableLine(rawLine, ctx) {
     }
   }
   if (hours === null || hours <= 0) return null;
-  if (durFromLine && (TIME_RANGE_RE.test(working) || DURATION_RE.test(working))) {
+  if (durFromLine && TIME_RANGE_RE.test(working)) {
     return null;
   }
-  const description = working.replace(BILLABLE_RE_G, " ").replace(ANY_TAG_G, " ").replace(/\s+/g, " ").trim();
+  const description = working.replace(ANY_TAG_G, " ").replace(BILLABLE_RE_G, " ").replace(/\s+/g, " ").trim();
   if (!clientName) clientName = "Unassigned";
   return { clientId, clientName, date, hours, rate, description };
 }
@@ -3178,7 +3179,7 @@ var VaultScanner = class {
       for (const { index: i, text: line } of contentLines(content)) {
         const parsed = parseBillableLine(line, ctx);
         if (!parsed) {
-          if (/(^|\s)#billable(?![\w/-])/i.test(line) && !/\[invoice::/i.test(line)) {
+          if (/(^|\s)#billable(?![\w-])/i.test(line) && !/\[invoice::/i.test(line)) {
             unparsed.push({ path: file.path, line: i, text: line.trim() });
           }
           continue;

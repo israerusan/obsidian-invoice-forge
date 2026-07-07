@@ -50,7 +50,7 @@ export class VaultScanner {
 				const parsed = parseBillableLine(line, ctx);
 				if (!parsed) {
 					// Flag a #billable line that didn't parse and isn't already invoiced.
-					if (/(^|\s)#billable(?![\w/-])/i.test(line) && !/\[invoice::/i.test(line)) {
+					if (/(^|\s)#billable(?![\w-])/i.test(line) && !/\[invoice::/i.test(line)) {
 						unparsed.push({ path: file.path, line: i, text: line.trim() });
 					}
 					continue;

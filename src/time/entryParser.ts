@@ -17,12 +17,12 @@ export interface ParseContext {
 	clientNames: Record<string, string>; // slug -> display name, for #client/<slug> resolution
 }
 
-// The `(?![\w/-])` guard means a variant tag like #billable-later or
-// #billableish is NOT treated as billable — only #billable itself (followed by a
-// space, boundary, or non-tag char). This lets a "stage it, review, then bill"
-// workflow use hyphen-suffixed tags without them being silently invoiced.
-const BILLABLE_RE = /(^|\s)#billable(?![\w/-])/i;
-const BILLABLE_RE_G = /(^|\s)#billable(?![\w/-])/gi;
+// The `(?![\w-])` guard means a variant tag like #billable-later or #billableish
+// is NOT treated as billable. It intentionally still matches a nested child tag
+// #billable/urgent (the "/" is allowed to follow), which Obsidian treats as a
+// valid sub-tag of #billable — so sub-categorizing billable work keeps billing.
+const BILLABLE_RE = /(^|\s)#billable(?![\w-])/i;
+const BILLABLE_RE_G = /(^|\s)#billable(?![\w-])/gi;
 // Unicode-aware so an accented/non-ASCII slug (#client/café, #client/münchen)
 // is captured whole instead of truncated at the first non-ASCII byte.
 const CLIENT_TAG_RE = /(^|\s)#client\/([\p{L}\p{N}_-]+)/u;
@@ -87,7 +87,10 @@ export function parseBillableLine(rawLine: string, ctx: ParseContext): ParsedEnt
 	// and falls back to the base rate instead of being silently billed positive.
 	let rate: number | null = null;
 	if (fields.rate !== undefined) {
-		const rateMatch = /-?\d+(?:\.\d+)?/.exec(fields.rate);
+		// Drop digit-grouping separators (1,200 / 1_200 / 1 200) so a grouped rate
+		// isn't truncated at the first separator, while keeping the leading sign.
+		const cleaned = fields.rate.replace(/[,_\s](?=\d)/g, "");
+		const rateMatch = /-?\d+(?:\.\d+)?/.exec(cleaned);
 		const r = rateMatch ? Number(rateMatch[0]) : NaN;
 		if (!Number.isNaN(r) && r > 0) rate = r;
 	}
@@ -117,20 +120,24 @@ export function parseBillableLine(rawLine: string, ctx: ParseContext): ParsedEnt
 	}
 	if (hours === null || hours <= 0) return null;
 
-	// Ambiguity guard: if the duration came from a loose token on the line and
-	// ANOTHER duration/range token still remains (e.g. "1h morning 2h afternoon"),
-	// the total is ambiguous. Return null so the line is SURFACED as unparsed
-	// rather than silently billing only the first token and undercounting. A
-	// duration from an inline [time::] field is authoritative, so loose tokens are
-	// then just prose and don't trigger this.
-	if (durFromLine && (TIME_RANGE_RE.test(working) || DURATION_RE.test(working))) {
+	// Ambiguity guard: if the duration came from a loose token and a second CLOCK
+	// RANGE (HH:MM-HH:MM) still remains, the line spans two sessions and the total
+	// is ambiguous — surface it as unparsed rather than silently billing only the
+	// first. Deliberately only a time RANGE: a bare "30m"/"3h" is far more often
+	// prose ("fixed the 30m timeout") than a second session, so matching those
+	// would wrongly reject very common descriptions. A clock range almost never
+	// appears in prose. (An inline [time::] field is authoritative, so durFromLine
+	// is false and this never triggers for it.)
+	if (durFromLine && TIME_RANGE_RE.test(working)) {
 		return null;
 	}
 
-	// Description: whatever's left after removing tags and tokens.
+	// Description: whatever's left after removing tags and tokens. Strip whole
+	// tags first (ANY_TAG_G removes a nested #billable/urgent in one piece, so its
+	// "/urgent" child can't leak into the text), then any bare #billable remnant.
 	const description = working
-		.replace(BILLABLE_RE_G, " ")
 		.replace(ANY_TAG_G, " ")
+		.replace(BILLABLE_RE_G, " ")
 		.replace(/\s+/g, " ")
 		.trim();
 
