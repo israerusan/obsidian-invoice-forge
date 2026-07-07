@@ -3,6 +3,20 @@
 All notable changes to Invoice Forge are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [1.1.1] - 2026-07-06
+
+### Changed
+- Pro is now **$15 one-time** (down from $19), quoted consistently across the
+  settings upsell, invoice modal, and README.
+- Updated the funding/purchase link to the canonical Buy Me a Coffee URL.
+
+### Fixed
+- Corrected the TypeScript `lib`/`target` (to `ES2020`/`ES2018`) so standard
+  string methods (`padStart`, `trimStart`, `trimEnd`) are properly typed. This
+  clears a batch of spurious `no-unsafe-*` lint warnings in the Obsidian review
+  ruleset — no runtime behavior changes.
+- Removed leftover placeholder/TODO text from the README.
+
 ## [1.1.0] - 2026-07-06
 
 ### Fixed

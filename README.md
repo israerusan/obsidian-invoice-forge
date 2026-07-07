@@ -4,8 +4,6 @@
 
 Find the billable work hidden in your daily notes and turn it into a client invoice — without re-entering it in another app. Built for the solo consultant or freelancer who bills hourly and already lives in their vault.
 
-<!-- TODO(marketing): add a 45s hero GIF here — daily note #billable line → Preview unbilled hours → Create invoice → rendered invoice → source line showing the new [invoice:: INV-…] marker. Suggested path assets/marketing/workflow.gif -->
-
 ## How it works
 
 Add a billable line anywhere in your notes (daily notes work great):
@@ -40,7 +38,7 @@ not silently dropped, so tagged work never disappears from an invoice.
 
 ## Free vs Pro
 
-**Pro is $19, one-time — no subscription.** One recovered forgotten hour usually pays for it. The full capture → invoice → billed workflow is free.
+**Pro is $15, one-time — no subscription.** One recovered forgotten hour usually pays for it. The full capture → invoice → billed workflow is free.
 
 | Area | Free | Pro |
 | --- | :--: | :--: |
@@ -69,7 +67,7 @@ Capture, scan, and invoice generation work on **desktop and mobile**. PDF export
 
 ## Activate Pro
 
-1. Purchase Invoice Forge Pro ($19 one-time) — the buy link is in the plugin's settings tab under **License key**, or on [Buy Me a Coffee](https://buymeacoffee.com/invoiceforge)
+1. Purchase Invoice Forge Pro ($15 one-time) — the buy link is in the plugin's settings tab under **License key**, or on [Buy Me a Coffee](https://buymeacoffee.com/vaultspotlight/e/554726)
 2. You will receive a license key by email
 3. Open Obsidian → Settings → Invoice Forge
 4. Paste your license key — Pro unlocks immediately (offline verification)

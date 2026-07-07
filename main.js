@@ -2273,7 +2273,7 @@ module.exports = __toCommonJS(main_exports);
 var import_obsidian6 = require("obsidian");
 
 // src/settings.ts
-var PRO_PRICE = "$19 one-time";
+var PRO_PRICE = "$15 one-time";
 var DEFAULT_BUSINESS = {
   name: "",
   email: "",
@@ -2289,7 +2289,7 @@ var DEFAULT_SETTINGS = {
   licenseKey: "",
   isPro: false,
   licenseEmail: "",
-  purchaseUrl: "https://buymeacoffee.com/invoiceforge",
+  purchaseUrl: "https://buymeacoffee.com/vaultspotlight/e/554726",
   pendingInvoice: null,
   business: DEFAULT_BUSINESS,
   clients: [],

@@ -2,7 +2,7 @@ import type { BusinessProfile, Client } from "./model/types";
 
 // The public one-time Pro price. Kept in one place so every buyer-facing surface
 // (settings upsell, modal, README) can quote the same number.
-export const PRO_PRICE = "$19 one-time";
+export const PRO_PRICE = "$15 one-time";
 
 // A crash-recovery record written just before an invoice's source entries are
 // marked billed, and cleared once the invoice note exists. If the process dies
@@ -53,7 +53,7 @@ export const DEFAULT_SETTINGS: InvoiceForgeSettings = {
 	licenseKey: "",
 	isPro: false,
 	licenseEmail: "",
-	purchaseUrl: "https://buymeacoffee.com/invoiceforge",
+	purchaseUrl: "https://buymeacoffee.com/vaultspotlight/e/554726",
 	pendingInvoice: null,
 
 	business: DEFAULT_BUSINESS,
