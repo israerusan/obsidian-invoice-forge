@@ -3,7 +3,7 @@
 All notable changes to Invoice Forge are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
-## [1.1.2] - 2026-07-06
+## [1.2.0] - 2026-07-06
 
 Hardening release from a multi-round adversarial code review. No changes to the
 normal happy-path workflow; these fix edge cases that could mis-bill, crash, or
