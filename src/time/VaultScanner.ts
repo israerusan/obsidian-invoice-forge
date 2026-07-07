@@ -1,7 +1,7 @@
 import { App, TFile } from "obsidian";
 import type { Client, TimeEntry } from "../model/types";
 import { lineMatchesEntry, markLineBilled, parseBillableLine, unmarkLineBilled, type ParseContext } from "./entryParser";
-import { contentLines } from "./markdownRegions";
+import { contentLines, frontmatterDate } from "./markdownRegions";
 import { toISODate } from "../invoice/InvoiceBuilder";
 
 const DAILY_NOTE_DATE_RE = /(\d{4}-\d{2}-\d{2})/;
@@ -40,7 +40,7 @@ export class VaultScanner {
 			if (!/#billable/i.test(content)) continue;
 
 			const cache = this.app.metadataCache.getFileCache(file);
-			const defaultDate = this.resolveNoteDate(file, cache);
+			const defaultDate = this.resolveNoteDate(file, cache, content);
 			const ctx: ParseContext = { defaultDate, clientNames };
 
 			// Scan only real content lines — frontmatter and fenced code blocks are
@@ -50,7 +50,7 @@ export class VaultScanner {
 				const parsed = parseBillableLine(line, ctx);
 				if (!parsed) {
 					// Flag a #billable line that didn't parse and isn't already invoiced.
-					if (/(^|\s)#billable\b/i.test(line) && !/\[invoice::/i.test(line)) {
+					if (/(^|\s)#billable(?![\w/-])/i.test(line) && !/\[invoice::/i.test(line)) {
 						unparsed.push({ path: file.path, line: i, text: line.trim() });
 					}
 					continue;
@@ -162,9 +162,17 @@ export class VaultScanner {
 	}
 
 	// Date priority: frontmatter `date` → daily-note date in filename → file mtime.
-	private resolveNoteDate(file: TFile, cache: ReturnType<App["metadataCache"]["getFileCache"]>): string {
-		const fm = cache?.frontmatter;
-		const fmDate: unknown = fm?.date;
+	// The frontmatter date is read from the FRESH content first (the metadataCache
+	// can lag a just-saved edit and would otherwise mis-date a new note to mtime),
+	// falling back to the cache for notes already parsed by Obsidian.
+	private resolveNoteDate(
+		file: TFile,
+		cache: ReturnType<App["metadataCache"]["getFileCache"]>,
+		content: string
+	): string {
+		const fromContent = frontmatterDate(content);
+		if (fromContent) return fromContent;
+		const fmDate: unknown = cache?.frontmatter?.date;
 		if (typeof fmDate === "string" && DAILY_NOTE_DATE_RE.test(fmDate)) {
 			return (DAILY_NOTE_DATE_RE.exec(fmDate) as RegExpExecArray)[1];
 		}

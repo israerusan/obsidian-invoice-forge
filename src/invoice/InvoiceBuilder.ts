@@ -1,5 +1,5 @@
 import type { BusinessProfile, Client, Invoice, InvoiceLine, TimeEntry } from "../model/types";
-import { round2 } from "./money";
+import { currencyFractionDigits, roundMoney } from "./money";
 
 export interface BuildOptions {
 	number: string;
@@ -48,18 +48,29 @@ function finite(n: number, fallback: number): number {
 
 // The single source of truth for invoice arithmetic. Both buildInvoice and the
 // modal's live preview call this so the previewed subtotal/total can never drift
-// from the created invoice (each line is rounded, then summed, then taxed).
-export function summarizeEntries(entries: TimeEntry[], baseRate: number, taxRate: number): EntryTotals {
+// from the created invoice (each line is rounded, then summed, then taxed). All
+// rounding uses the currency's minor-unit scale so the stored/summed numbers
+// agree with what formatMoney displays (critically for 0-decimal currencies like
+// JPY, where 2-decimal rounding would make line items not add up to the total).
+export function summarizeEntries(
+	entries: TimeEntry[],
+	baseRate: number,
+	taxRate: number,
+	currency = "USD"
+): EntryTotals {
+	const digits = currencyFractionDigits(currency);
 	const safeBase = finite(baseRate, 0);
 	const safeTaxRate = finite(taxRate, 0);
 	const lines: InvoiceLine[] = entries.map((e) => {
-		const rate = finite(e.rate ?? safeBase, safeBase);
-		const amount = round2(e.hours * rate);
+		// Round the rate to the currency scale too, so the displayed rate × hours
+		// equals the displayed amount (a 3-decimal rate would otherwise disagree).
+		const rate = roundMoney(finite(e.rate ?? safeBase, safeBase), digits);
+		const amount = roundMoney(e.hours * rate, digits);
 		return { date: e.date, description: e.description || "Work", hours: e.hours, rate, amount };
 	});
-	const subtotal = round2(lines.reduce((sum, l) => sum + l.amount, 0));
-	const taxAmount = round2((subtotal * safeTaxRate) / 100);
-	const total = round2(subtotal + taxAmount);
+	const subtotal = roundMoney(lines.reduce((sum, l) => sum + l.amount, 0), digits);
+	const taxAmount = roundMoney((subtotal * safeTaxRate) / 100, digits);
+	const total = roundMoney(subtotal + taxAmount, digits);
 	return { lines, subtotal, taxAmount, total };
 }
 
@@ -84,7 +95,7 @@ export function buildInvoice(
 	opts: BuildOptions
 ): Invoice {
 	const { baseRate, taxRate, currency } = resolveRates(client, business, opts.isPro);
-	const { lines, subtotal, taxAmount, total } = summarizeEntries(entries, baseRate, taxRate);
+	const { lines, subtotal, taxAmount, total } = summarizeEntries(entries, baseRate, taxRate, currency);
 
 	return {
 		number: opts.number,

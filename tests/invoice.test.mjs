@@ -134,6 +134,28 @@ assert.equal(resolveRates(acme, business, false).currency, "USD", "free forces b
 assert.equal(resolveRates(acme, business, false).taxRate, 0, "free forces zero tax");
 assert.equal(resolveRates(acme, business, true).currency, "EUR", "pro honors client currency");
 
+// --- Zero-decimal currency (JPY): line amounts must sum to the subtotal/total
+// at the currency's scale, so the printed line items add up to the printed total. ---
+const jpyEntries = [
+	{ clientId: null, clientName: "JP", date: "2026-06-01", hours: 0.5, rate: 201, description: "a", sourcePath: "p", line: 0 },
+	{ clientId: null, clientName: "JP", date: "2026-06-02", hours: 0.5, rate: 201, description: "b", sourcePath: "p", line: 1 },
+];
+const jpy = summarizeEntries(jpyEntries, 201, 0, "JPY");
+assert.equal(jpy.lines[0].amount, 101, "0.5h * ¥201 rounds to whole yen (¥101)");
+assert.equal(jpy.subtotal, 202, "subtotal is the sum of the rounded line amounts (101+101)");
+assert.equal(jpy.lines[0].amount + jpy.lines[1].amount, jpy.subtotal, "line items add up to the subtotal");
+assert.equal(jpy.total, 202);
+
+// --- A >2-decimal rate is rounded to the currency scale so rate*hours == amount. ---
+const precise = summarizeEntries(
+	[{ clientId: null, clientName: "X", date: "2026-06-01", hours: 2, rate: 40.255, description: "a", sourcePath: "p", line: 0 }],
+	40.255,
+	0,
+	"USD"
+);
+assert.equal(precise.lines[0].rate, 40.26, "rate rounded to 2 decimals");
+assert.equal(precise.lines[0].amount, 80.52, "amount computed from the rounded rate (40.26*2)");
+
 // --- Frontmatter escaping: a client name with backslashes/quotes must not
 // corrupt the YAML block (which would silently break Dataview status + reminders). ---
 const nasty = buildInvoice(

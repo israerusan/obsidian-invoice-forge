@@ -2621,13 +2621,27 @@ function formatMoney(amount, currency) {
       currency: code
     }).format(amount);
   } catch (e) {
-    return `${code} ${amount.toFixed(2)}`;
+    return `${code} ${amount.toFixed(currencyFractionDigits(currency))}`;
   }
 }
-function round2(n) {
+function currencyFractionDigits(currency) {
+  var _a;
+  const code = (currency || "USD").toUpperCase();
+  try {
+    return (_a = new Intl.NumberFormat(void 0, { style: "currency", currency: code }).resolvedOptions().maximumFractionDigits) != null ? _a : 2;
+  } catch (e) {
+    return 2;
+  }
+}
+function roundMoney(n, digits) {
   if (!Number.isFinite(n)) return 0;
+  const factor = Math.pow(10, digits);
   const sign = n < 0 ? -1 : 1;
-  return sign * Math.round((Math.abs(n) + Number.EPSILON) * 100) / 100;
+  const v = sign * Math.round((Math.abs(n) + Number.EPSILON) * factor) / factor;
+  return Object.is(v, -0) ? 0 : v;
+}
+function round2(n) {
+  return roundMoney(n, 2);
 }
 
 // src/invoice/InvoiceBuilder.ts
@@ -2644,18 +2658,19 @@ function filterEntries(entries, client, clientName, periodStart, periodEnd) {
 function finite(n, fallback) {
   return Number.isFinite(n) ? n : fallback;
 }
-function summarizeEntries(entries, baseRate, taxRate) {
+function summarizeEntries(entries, baseRate, taxRate, currency = "USD") {
+  const digits = currencyFractionDigits(currency);
   const safeBase = finite(baseRate, 0);
   const safeTaxRate = finite(taxRate, 0);
   const lines = entries.map((e) => {
     var _a;
-    const rate = finite((_a = e.rate) != null ? _a : safeBase, safeBase);
-    const amount = round2(e.hours * rate);
+    const rate = roundMoney(finite((_a = e.rate) != null ? _a : safeBase, safeBase), digits);
+    const amount = roundMoney(e.hours * rate, digits);
     return { date: e.date, description: e.description || "Work", hours: e.hours, rate, amount };
   });
-  const subtotal = round2(lines.reduce((sum, l) => sum + l.amount, 0));
-  const taxAmount = round2(subtotal * safeTaxRate / 100);
-  const total = round2(subtotal + taxAmount);
+  const subtotal = roundMoney(lines.reduce((sum, l) => sum + l.amount, 0), digits);
+  const taxAmount = roundMoney(subtotal * safeTaxRate / 100, digits);
+  const total = roundMoney(subtotal + taxAmount, digits);
   return { lines, subtotal, taxAmount, total };
 }
 function resolveRates(client, business, isPro) {
@@ -2669,7 +2684,7 @@ function resolveRates(client, business, isPro) {
 function buildInvoice(entries, client, business, opts) {
   var _a, _b;
   const { baseRate, taxRate, currency } = resolveRates(client, business, opts.isPro);
-  const { lines, subtotal, taxAmount, total } = summarizeEntries(entries, baseRate, taxRate);
+  const { lines, subtotal, taxAmount, total } = summarizeEntries(entries, baseRate, taxRate, currency);
   return {
     number: opts.number,
     clientId: client ? client.id : null,
@@ -2865,7 +2880,7 @@ var InvoiceModal = class extends import_obsidian3.Modal {
     }
     const totalHours = matched.reduce((s, e) => s + e.hours, 0);
     const { baseRate, taxRate, currency } = resolveRates(client, this.plugin.settings.business, this.plugin.settings.isPro);
-    const totals = summarizeEntries(matched, baseRate, taxRate);
+    const totals = summarizeEntries(matched, baseRate, taxRate, currency);
     let text = `${matched.length} entries \xB7 ${round2(totalHours)}h \xB7 subtotal ${formatMoney(totals.subtotal, currency)}`;
     if (totals.taxAmount > 0) {
       text += ` \xB7 +${formatMoney(totals.taxAmount, currency)} tax \xB7 total ${formatMoney(totals.total, currency)}`;
@@ -2990,12 +3005,14 @@ function parseDuration(token) {
 
 // src/time/entryParser.ts
 var INVOICE_FIELD = "invoice";
-var BILLABLE_RE = /(^|\s)#billable\b/i;
-var CLIENT_TAG_RE = /(^|\s)#client\/([A-Za-z0-9_-]+)/;
+var BILLABLE_RE = /(^|\s)#billable(?![\w/-])/i;
+var BILLABLE_RE_G = /(^|\s)#billable(?![\w/-])/gi;
+var CLIENT_TAG_RE = /(^|\s)#client\/([\p{L}\p{N}_-]+)/u;
 var INLINE_FIELD_RE = /\[([a-z]+)::\s*([^\]]+)\]/gi;
 var TIME_RANGE_RE = /\b\d{1,2}:\d{2}\s*-\s*\d{1,2}:\d{2}\b/;
 var DURATION_RE = /\b\d+(?:\.\d+)?h(?:\s*\d+m)?\b|\b\d+m\b/i;
 var DATE_RE = /\b(\d{4}-\d{2}-\d{2})\b/;
+var ANY_TAG_G = /(^|\s)#[\p{L}\p{N}_/-]+/gu;
 function parseBillableLine(rawLine, ctx) {
   var _a, _b, _c;
   const line = rawLine.replace(/^[\s>*+-]*(?:\[[ xX/-]\]\s*)?/, "");
@@ -3006,7 +3023,7 @@ function parseBillableLine(rawLine, ctx) {
     fields[key.toLowerCase()] = value.trim();
     return " ";
   });
-  if (fields[INVOICE_FIELD]) return null;
+  if (fields[INVOICE_FIELD] !== void 0 || /\[invoice::/i.test(line)) return null;
   let clientId = null;
   let clientName = "";
   const clientTag = CLIENT_TAG_RE.exec(working);
@@ -3030,10 +3047,12 @@ function parseBillableLine(rawLine, ctx) {
   }
   let rate = null;
   if (fields.rate !== void 0) {
-    const r = Number(fields.rate.replace(/[^0-9.]/g, ""));
+    const rateMatch = /-?\d+(?:\.\d+)?/.exec(fields.rate);
+    const r = rateMatch ? Number(rateMatch[0]) : NaN;
     if (!Number.isNaN(r) && r > 0) rate = r;
   }
   let hours = null;
+  let durFromLine = false;
   const durField = (_c = (_b = fields.time) != null ? _b : fields.hours) != null ? _c : fields.duration;
   if (durField) {
     hours = parseDuration(durField);
@@ -3043,6 +3062,7 @@ function parseBillableLine(rawLine, ctx) {
     if (range) {
       hours = parseDuration(range[0]);
       working = working.replace(range[0], " ");
+      durFromLine = true;
     }
   }
   if (hours === null) {
@@ -3050,10 +3070,14 @@ function parseBillableLine(rawLine, ctx) {
     if (dur) {
       hours = parseDuration(dur[0]);
       working = working.replace(dur[0], " ");
+      durFromLine = true;
     }
   }
   if (hours === null || hours <= 0) return null;
-  const description = working.replace(/(^|\s)#billable\b/gi, " ").replace(/(^|\s)#[A-Za-z0-9_/-]+/g, " ").replace(/\s+/g, " ").trim();
+  if (durFromLine && (TIME_RANGE_RE.test(working) || DURATION_RE.test(working))) {
+    return null;
+  }
+  const description = working.replace(BILLABLE_RE_G, " ").replace(ANY_TAG_G, " ").replace(/\s+/g, " ").trim();
   if (!clientName) clientName = "Unassigned";
   return { clientId, clientName, date, hours, rate, description };
 }
@@ -3082,6 +3106,21 @@ function escapeRegExp(value) {
 }
 
 // src/time/markdownRegions.ts
+var ISO_DATE_RE = /(\d{4}-\d{2}-\d{2})/;
+function frontmatterDate(content) {
+  var _a;
+  const lines = content.split(/\r?\n/);
+  if (((_a = lines[0]) == null ? void 0 : _a.trim()) !== "---") return null;
+  for (let i = 1; i < lines.length; i++) {
+    if (lines[i].trim() === "---") break;
+    const m = /^date\s*:\s*(.+)$/.exec(lines[i].trim());
+    if (m) {
+      const iso = ISO_DATE_RE.exec(m[1]);
+      return iso ? iso[1] : null;
+    }
+  }
+  return null;
+}
 function contentLines(content) {
   var _a;
   const lines = content.split(/\r?\n/);
@@ -3134,12 +3173,12 @@ var VaultScanner = class {
       const content = await this.app.vault.cachedRead(file);
       if (!/#billable/i.test(content)) continue;
       const cache = this.app.metadataCache.getFileCache(file);
-      const defaultDate = this.resolveNoteDate(file, cache);
+      const defaultDate = this.resolveNoteDate(file, cache, content);
       const ctx = { defaultDate, clientNames };
       for (const { index: i, text: line } of contentLines(content)) {
         const parsed = parseBillableLine(line, ctx);
         if (!parsed) {
-          if (/(^|\s)#billable\b/i.test(line) && !/\[invoice::/i.test(line)) {
+          if (/(^|\s)#billable(?![\w/-])/i.test(line) && !/\[invoice::/i.test(line)) {
             unparsed.push({ path: file.path, line: i, text: line.trim() });
           }
           continue;
@@ -3239,9 +3278,14 @@ var VaultScanner = class {
     return failed;
   }
   // Date priority: frontmatter `date` → daily-note date in filename → file mtime.
-  resolveNoteDate(file, cache) {
-    const fm = cache == null ? void 0 : cache.frontmatter;
-    const fmDate = fm == null ? void 0 : fm.date;
+  // The frontmatter date is read from the FRESH content first (the metadataCache
+  // can lag a just-saved edit and would otherwise mis-date a new note to mtime),
+  // falling back to the cache for notes already parsed by Obsidian.
+  resolveNoteDate(file, cache, content) {
+    var _a;
+    const fromContent = frontmatterDate(content);
+    if (fromContent) return fromContent;
+    const fmDate = (_a = cache == null ? void 0 : cache.frontmatter) == null ? void 0 : _a.date;
     if (typeof fmDate === "string" && DAILY_NOTE_DATE_RE.test(fmDate)) {
       return DAILY_NOTE_DATE_RE.exec(fmDate)[1];
     }
@@ -3641,6 +3685,8 @@ ${summary}${warn}`, 8e3);
       await this.saveSettings();
       return;
     }
+    if (this.creating) return;
+    this.creating = true;
     try {
       const existing = this.app.vault.getAbstractFileByPath(pending.path);
       if (!(existing instanceof import_obsidian6.TFile)) {
@@ -3649,22 +3695,28 @@ ${summary}${warn}`, 8e3);
         await this.app.vault.create(pending.path, pending.markdown);
       }
       for (const entry of pending.entries) {
-        const file = this.app.vault.getAbstractFileByPath(entry.sourcePath);
+        if (!entry || typeof entry !== "object") continue;
+        const { sourcePath, line, raw } = entry;
+        if (typeof sourcePath !== "string" || typeof raw !== "string" || !Number.isInteger(line)) continue;
+        const file = this.app.vault.getAbstractFileByPath(sourcePath);
         if (!(file instanceof import_obsidian6.TFile)) continue;
         await this.app.vault.process(file, (content) => {
           const lines = content.split(/\r?\n/);
-          if (entry.line < lines.length && lineMatchesEntry(lines[entry.line], entry.raw)) {
-            lines[entry.line] = markLineBilled(lines[entry.line], pending.number);
+          if (line < lines.length && lineMatchesEntry(lines[line], raw)) {
+            lines[line] = markLineBilled(lines[line], pending.number);
           }
           return lines.join("\n");
         });
       }
       new import_obsidian6.Notice(`Recovered an interrupted invoice: ${pending.number}.`);
+      if (this.settings.pendingInvoice === pending) {
+        this.settings.pendingInvoice = null;
+        await this.saveSettings();
+      }
     } catch (e) {
-      return;
+    } finally {
+      this.creating = false;
     }
-    this.settings.pendingInvoice = null;
-    await this.saveSettings();
   }
   // The normalized, filesystem-safe folder where invoice notes live. Shared by
   // invoice creation and the reminder scan so they always agree on the location
@@ -3741,15 +3793,16 @@ ${summary}${warn}`, 8e3);
       delete loaded[key];
     }
     this.settings = Object.assign({}, DEFAULT_SETTINGS, loaded);
+    const num = (v, fallback) => typeof v === "number" && Number.isFinite(v) ? v : fallback;
+    const posInt = (v, fallback) => typeof v === "number" && Number.isInteger(v) && v > 0 ? v : fallback;
     const business = loaded.business;
-    this.settings.business = Object.assign(
-      {},
-      DEFAULT_SETTINGS.business,
+    this.settings.business = normalizeBusiness(
       business && typeof business === "object" ? business : {}
     );
-    const num = (v, fallback) => typeof v === "number" && Number.isFinite(v) ? v : fallback;
-    this.settings.business.defaultRate = num(this.settings.business.defaultRate, DEFAULT_SETTINGS.business.defaultRate);
-    this.settings.business.taxRate = num(this.settings.business.taxRate, DEFAULT_SETTINGS.business.taxRate);
+    this.settings.nextSeq = posInt(this.settings.nextSeq, DEFAULT_SETTINGS.nextSeq);
+    this.settings.dueInDays = num(this.settings.dueInDays, DEFAULT_SETTINGS.dueInDays);
+    this.settings.reminderDaysBefore = num(this.settings.reminderDaysBefore, DEFAULT_SETTINGS.reminderDaysBefore);
+    this.settings.defaultPeriodDays = num(this.settings.defaultPeriodDays, DEFAULT_SETTINGS.defaultPeriodDays);
     this.settings.clients = Array.isArray(loaded.clients) ? loaded.clients.filter((c) => !!c && typeof c === "object").map(normalizeClient) : [];
   }
   async saveSettings() {
@@ -3761,6 +3814,22 @@ function safeFileName(name) {
 }
 function safeFolderPath(path) {
   return path.split("/").map((seg) => seg.replace(/[\\:*?"<>|]/g, "-").trim()).filter((seg) => seg.length > 0).join("/");
+}
+function normalizeBusiness(raw) {
+  const d = DEFAULT_BUSINESS;
+  const str = (v, fallback) => typeof v === "string" ? v : fallback;
+  const num = (v, fallback) => typeof v === "number" && Number.isFinite(v) ? v : fallback;
+  return {
+    name: str(raw.name, d.name),
+    email: str(raw.email, d.email),
+    address: str(raw.address, d.address),
+    logoUrl: str(raw.logoUrl, d.logoUrl),
+    defaultRate: num(raw.defaultRate, d.defaultRate),
+    currency: str(raw.currency, d.currency),
+    taxRate: num(raw.taxRate, d.taxRate),
+    taxLabel: str(raw.taxLabel, d.taxLabel),
+    notes: str(raw.notes, d.notes)
+  };
 }
 function normalizeClient(raw) {
   const str = (v) => typeof v === "string" ? v : "";

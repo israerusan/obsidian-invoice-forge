@@ -201,7 +201,7 @@ export class InvoiceModal extends Modal {
 		// Use the exact same arithmetic + gating as buildInvoice so the previewed
 		// numbers match the created invoice to the penny.
 		const { baseRate, taxRate, currency } = resolveRates(client, this.plugin.settings.business, this.plugin.settings.isPro);
-		const totals = summarizeEntries(matched, baseRate, taxRate);
+		const totals = summarizeEntries(matched, baseRate, taxRate, currency);
 
 		let text = `${matched.length} entries · ${round2(totalHours)}h · subtotal ${formatMoney(totals.subtotal, currency)}`;
 		if (totals.taxAmount > 0) {

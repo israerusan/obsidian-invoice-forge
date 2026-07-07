@@ -1,5 +1,12 @@
 import assert from "assert";
-import { markLineBilled, unmarkLineBilled, lineMatchesEntry, parseBillableLine, contentLines } from "./.testable.mjs";
+import {
+	markLineBilled,
+	unmarkLineBilled,
+	lineMatchesEntry,
+	parseBillableLine,
+	contentLines,
+	frontmatterDate,
+} from "./.testable.mjs";
 
 const ctx = { defaultDate: "2026-06-01", clientNames: { acme: "Acme Corp" } };
 
@@ -107,6 +114,36 @@ assert.ok(!lineMatchesEntry("- #billable #client/beta 2.5h Auth", rawLine), "cha
 assert.ok(!lineMatchesEntry("- #billable #client/acme 2.5h Auth [rate:: 200]", rawLine), "added rate does not match");
 assert.ok(!lineMatchesEntry(rawLine + " [invoice:: INV-1]", rawLine), "already-marked line does not match");
 
+// --- Hyphen-suffixed variant tags are NOT billable (#billable-later workflow) ---
+assert.equal(parseBillableLine("- #billable-later #client/acme 2h Staged work", ctx), null, "#billable-later is not billed");
+assert.equal(parseBillableLine("- #billableish 2h", ctx), null, "#billableish is not billed");
+const stillBillable = parseBillableLine("- #billable #client/acme 2h Real", ctx);
+assert.ok(stillBillable && stillBillable.hours === 2, "plain #billable still bills");
+
+// --- Unicode #client slug is captured whole, not truncated at the first non-ASCII char ---
+const uni = parseBillableLine("- #billable #client/café 2h Fixed login", ctx);
+assert.ok(uni);
+assert.equal(uni.clientId, "café", "accented slug captured in full");
+assert.equal(uni.description, "Fixed login", "no orphaned accent leaks into description");
+
+// --- Multiple loose duration tokens are ambiguous → surfaced (null), not undercounted ---
+assert.equal(
+	parseBillableLine("- #billable #client/acme 1h morning 2h afternoon", ctx),
+	null,
+	"two loose durations are rejected as ambiguous rather than billing only 1h"
+);
+// An inline [time::] field is authoritative; a loose number in prose is fine.
+const withField = parseBillableLine("- #billable #client/acme [time:: 3h] reviewed 2 PRs", ctx);
+assert.ok(withField && withField.hours === 3, "inline time field is authoritative over loose prose");
+
+// --- A negative inline rate is dropped (falls back to base), not flipped positive ---
+const negRate = parseBillableLine("- #billable #client/acme 2h Work [rate:: -50]", ctx);
+assert.ok(negRate);
+assert.equal(negRate.rate, null, "a negative rate is rejected, not billed as +50");
+
+// --- A whitespace-only invoice marker still suppresses re-billing ---
+assert.equal(parseBillableLine("- #billable #client/acme 2h Done [invoice:: ]", ctx), null, "empty marker blocks re-bill");
+
 // --- contentLines: frontmatter + fenced-code exclusion, with true line indices ---
 const texts = (c) => contentLines(c).map((l) => l.text);
 const indices = (c) => contentLines(c).map((l) => l.index);
@@ -133,5 +170,12 @@ assert.deepEqual(texts(mixedFence), ["- #billable 1h out"]);
 // A longer closing fence closes a shorter opener; a too-short run does not.
 const lenFence = "````\n- #billable 9h IN CODE\n```\nstill code\n````\n- #billable 1h out";
 assert.deepEqual(texts(lenFence), ["- #billable 1h out"]);
+
+// --- frontmatterDate: read the entry date from fresh content, not a stale cache ---
+assert.equal(frontmatterDate("---\ndate: 2026-01-10\n---\n- #billable 2h"), "2026-01-10");
+assert.equal(frontmatterDate('---\ndate: "2026-01-10"\ntags: [x]\n---\nbody'), "2026-01-10", "quoted date value");
+assert.equal(frontmatterDate("no frontmatter here"), null);
+assert.equal(frontmatterDate("---\ntitle: X\n---\nbody"), null, "no date key -> null");
+assert.equal(frontmatterDate("---\nnote: date is 2026-01-10 somewhere\n---"), null, "date only read from a date: key");
 
 console.log("parser tests passed");

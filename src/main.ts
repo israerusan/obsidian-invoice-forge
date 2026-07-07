@@ -1,5 +1,5 @@
 import { Editor, Notice, Platform, Plugin, TFile, normalizePath } from "obsidian";
-import { DEFAULT_SETTINGS, type InvoiceForgeSettings } from "./settings";
+import { DEFAULT_BUSINESS, DEFAULT_SETTINGS, type InvoiceForgeSettings } from "./settings";
 import { InvoiceForgeSettingTab } from "./ui/SettingTab";
 import { InvoiceModal } from "./ui/InvoiceModal";
 import { LicenseManager } from "./license/LicenseManager";
@@ -10,7 +10,7 @@ import { round2 } from "./invoice/money";
 import { renderInvoiceMarkdown, renderInvoiceHtml } from "./invoice/InvoiceRenderer";
 import { formatInvoiceNumber } from "./invoice/numbering";
 import { ReminderManager } from "./reminders/ReminderManager";
-import type { Client, Invoice } from "./model/types";
+import type { BusinessProfile, Client, Invoice } from "./model/types";
 
 export default class InvoiceForgePlugin extends Plugin {
 	settings: InvoiceForgeSettings = DEFAULT_SETTINGS;
@@ -213,6 +213,12 @@ export default class InvoiceForgePlugin extends Plugin {
 			await this.saveSettings();
 			return;
 		}
+		// Serialize against createInvoice: recovery and a user-triggered create must
+		// never run at once, or they could both bill the same still-unmarked entries
+		// (recovery creating the OLD note while a create issues a NEW one). Recovery
+		// runs at layout-ready before any modal can open, so it wins the lock first.
+		if (this.creating) return;
+		this.creating = true;
 		try {
 			const existing = this.app.vault.getAbstractFileByPath(pending.path);
 			if (!(existing instanceof TFile)) {
@@ -221,24 +227,34 @@ export default class InvoiceForgePlugin extends Plugin {
 				await this.app.vault.create(pending.path, pending.markdown);
 			}
 			// Best-effort: mark any still-unmarked source lines that still match.
+			// Skip malformed journal elements ([null], strings, missing fields) so a
+			// corrupt entry can't throw and leave the journal to loop forever.
 			for (const entry of pending.entries) {
-				const file = this.app.vault.getAbstractFileByPath(entry.sourcePath);
+				if (!entry || typeof entry !== "object") continue;
+				const { sourcePath, line, raw } = entry;
+				if (typeof sourcePath !== "string" || typeof raw !== "string" || !Number.isInteger(line)) continue;
+				const file = this.app.vault.getAbstractFileByPath(sourcePath);
 				if (!(file instanceof TFile)) continue;
 				await this.app.vault.process(file, (content) => {
 					const lines = content.split(/\r?\n/);
-					if (entry.line < lines.length && lineMatchesEntry(lines[entry.line], entry.raw)) {
-						lines[entry.line] = markLineBilled(lines[entry.line], pending.number);
+					if (line < lines.length && lineMatchesEntry(lines[line], raw)) {
+						lines[line] = markLineBilled(lines[line], pending.number);
 					}
 					return lines.join("\n");
 				});
 			}
 			new Notice(`Recovered an interrupted invoice: ${pending.number}.`);
+			// Clear the journal ONLY if it's still the record we just replayed — never
+			// wipe a fresh journal a create wrote in the meantime.
+			if (this.settings.pendingInvoice === pending) {
+				this.settings.pendingInvoice = null;
+				await this.saveSettings();
+			}
 		} catch {
 			// Leave the journal in place to retry on the next load if recovery failed.
-			return;
+		} finally {
+			this.creating = false;
 		}
-		this.settings.pendingInvoice = null;
-		await this.saveSettings();
 	}
 
 	// The normalized, filesystem-safe folder where invoice notes live. Shared by
@@ -328,19 +344,28 @@ export default class InvoiceForgePlugin extends Plugin {
 		}
 
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, loaded);
-		const business = loaded.business;
-		this.settings.business = Object.assign(
-			{},
-			DEFAULT_SETTINGS.business,
-			business && typeof business === "object" ? business : {}
-		);
-		// Coerce the numeric business fields: a hand-edited/mis-migrated data.json
-		// could store defaultRate/taxRate as strings, which would slip past the
-		// invoice builder's finite() guard and silently zero every line total.
+
+		// Coerce every field a corrupt/hand-edited/mis-migrated data.json could
+		// hold at the wrong type. The value of Number/string discipline here is
+		// that the rest of the plugin (settings tab, scanner, invoice builder,
+		// numbering) can never crash or misbehave on persisted junk.
 		const num = (v: unknown, fallback: number): number =>
 			typeof v === "number" && Number.isFinite(v) ? v : fallback;
-		this.settings.business.defaultRate = num(this.settings.business.defaultRate, DEFAULT_SETTINGS.business.defaultRate);
-		this.settings.business.taxRate = num(this.settings.business.taxRate, DEFAULT_SETTINGS.business.taxRate);
+		const posInt = (v: unknown, fallback: number): number =>
+			typeof v === "number" && Number.isInteger(v) && v > 0 ? v : fallback;
+
+		const business = loaded.business;
+		this.settings.business = normalizeBusiness(
+			business && typeof business === "object" ? (business as Record<string, unknown>) : {}
+		);
+
+		// Top-level numerics: a string nextSeq would make `nextSeq += 1` a string
+		// concatenation ("5"+1 -> "51") and corrupt every future invoice number.
+		this.settings.nextSeq = posInt(this.settings.nextSeq, DEFAULT_SETTINGS.nextSeq);
+		this.settings.dueInDays = num(this.settings.dueInDays, DEFAULT_SETTINGS.dueInDays);
+		this.settings.reminderDaysBefore = num(this.settings.reminderDaysBefore, DEFAULT_SETTINGS.reminderDaysBefore);
+		this.settings.defaultPeriodDays = num(this.settings.defaultPeriodDays, DEFAULT_SETTINGS.defaultPeriodDays);
+
 		// A hand-edited/corrupt clients value must not crash the settings tab or scanner.
 		this.settings.clients = Array.isArray(loaded.clients)
 			? loaded.clients.filter((c): c is Record<string, unknown> => !!c && typeof c === "object").map(normalizeClient)
@@ -366,6 +391,28 @@ function safeFolderPath(path: string): string {
 		.map((seg) => seg.replace(/[\\:*?"<>|]/g, "-").trim())
 		.filter((seg) => seg.length > 0)
 		.join("/");
+}
+
+// Coerce an untrusted persisted business object into a valid BusinessProfile.
+// A non-string field (e.g. `name: null` from a corrupt data.json) would crash
+// the settings tab and invoice modal on `.trim()`; a non-number rate would zero
+// invoice totals. Every field is forced to its declared type here.
+function normalizeBusiness(raw: Record<string, unknown>): BusinessProfile {
+	const d = DEFAULT_BUSINESS;
+	const str = (v: unknown, fallback: string): string => (typeof v === "string" ? v : fallback);
+	const num = (v: unknown, fallback: number): number =>
+		typeof v === "number" && Number.isFinite(v) ? v : fallback;
+	return {
+		name: str(raw.name, d.name),
+		email: str(raw.email, d.email),
+		address: str(raw.address, d.address),
+		logoUrl: str(raw.logoUrl, d.logoUrl),
+		defaultRate: num(raw.defaultRate, d.defaultRate),
+		currency: str(raw.currency, d.currency),
+		taxRate: num(raw.taxRate, d.taxRate),
+		taxLabel: str(raw.taxLabel, d.taxLabel),
+		notes: str(raw.notes, d.notes),
+	};
 }
 
 // Coerce an untrusted persisted client object into a valid Client so the rest of

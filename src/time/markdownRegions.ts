@@ -8,6 +8,27 @@ export interface ContentLine {
 	text: string;
 }
 
+const ISO_DATE_RE = /(\d{4}-\d{2}-\d{2})/;
+
+// Extract a `date:` value (as an ISO YYYY-MM-DD) from a note's leading YAML
+// frontmatter, reading from the RAW content string. The scanner reads content
+// fresh (cachedRead) but Obsidian's metadataCache can lag a just-saved edit, so
+// resolving the entry date from the cache would silently mis-date (and drop) a
+// brand-new note's billable lines. Returns null when there's no frontmatter date.
+export function frontmatterDate(content: string): string | null {
+	const lines = content.split(/\r?\n/);
+	if (lines[0]?.trim() !== "---") return null;
+	for (let i = 1; i < lines.length; i++) {
+		if (lines[i].trim() === "---") break; // end of frontmatter
+		const m = /^date\s*:\s*(.+)$/.exec(lines[i].trim());
+		if (m) {
+			const iso = ISO_DATE_RE.exec(m[1]);
+			return iso ? iso[1] : null;
+		}
+	}
+	return null;
+}
+
 // Return the lines that are eligible to be scanned for billable entries: every
 // line EXCEPT YAML frontmatter and fenced code blocks, each paired with its
 // original line index (needed to mark the exact source line later).

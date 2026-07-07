@@ -17,12 +17,22 @@ export interface ParseContext {
 	clientNames: Record<string, string>; // slug -> display name, for #client/<slug> resolution
 }
 
-const BILLABLE_RE = /(^|\s)#billable\b/i;
-const CLIENT_TAG_RE = /(^|\s)#client\/([A-Za-z0-9_-]+)/;
+// The `(?![\w/-])` guard means a variant tag like #billable-later or
+// #billableish is NOT treated as billable — only #billable itself (followed by a
+// space, boundary, or non-tag char). This lets a "stage it, review, then bill"
+// workflow use hyphen-suffixed tags without them being silently invoiced.
+const BILLABLE_RE = /(^|\s)#billable(?![\w/-])/i;
+const BILLABLE_RE_G = /(^|\s)#billable(?![\w/-])/gi;
+// Unicode-aware so an accented/non-ASCII slug (#client/café, #client/münchen)
+// is captured whole instead of truncated at the first non-ASCII byte.
+const CLIENT_TAG_RE = /(^|\s)#client\/([\p{L}\p{N}_-]+)/u;
 const INLINE_FIELD_RE = /\[([a-z]+)::\s*([^\]]+)\]/gi;
 const TIME_RANGE_RE = /\b\d{1,2}:\d{2}\s*-\s*\d{1,2}:\d{2}\b/;
 const DURATION_RE = /\b\d+(?:\.\d+)?h(?:\s*\d+m)?\b|\b\d+m\b/i;
 const DATE_RE = /\b(\d{4}-\d{2}-\d{2})\b/;
+// Any tag, unicode-aware, so a leftover accented slug fragment doesn't leak into
+// the description after tag stripping.
+const ANY_TAG_G = /(^|\s)#[\p{L}\p{N}_/-]+/gu;
 
 // Parse a single markdown line into a billable entry, or null if it isn't one.
 export function parseBillableLine(rawLine: string, ctx: ParseContext): ParsedEntry | null {
@@ -39,7 +49,9 @@ export function parseBillableLine(rawLine: string, ctx: ParseContext): ParsedEnt
 	});
 
 	// A source-line marker is portable and prevents accidental double billing.
-	if (fields[INVOICE_FIELD]) return null;
+	// Check for PRESENCE, not truthiness, and also scan the raw line — so an
+	// empty or whitespace-only marker ([invoice:: ]) still suppresses re-billing.
+	if (fields[INVOICE_FIELD] !== undefined || /\[invoice::/i.test(line)) return null;
 
 	// Client: prefer #client/<slug>, then [client:: Name].
 	let clientId: string | null = null;
@@ -70,15 +82,19 @@ export function parseBillableLine(rawLine: string, ctx: ParseContext): ParsedEnt
 		}
 	}
 
-	// Rate override.
+	// Rate override. Parse the number WITH its sign preserved (a bare digit strip
+	// would turn "-50" into "50"), so a negative/credit rate fails the > 0 guard
+	// and falls back to the base rate instead of being silently billed positive.
 	let rate: number | null = null;
 	if (fields.rate !== undefined) {
-		const r = Number(fields.rate.replace(/[^0-9.]/g, ""));
+		const rateMatch = /-?\d+(?:\.\d+)?/.exec(fields.rate);
+		const r = rateMatch ? Number(rateMatch[0]) : NaN;
 		if (!Number.isNaN(r) && r > 0) rate = r;
 	}
 
 	// Duration: time/hours field first, then a range or duration token on the line.
 	let hours: number | null = null;
+	let durFromLine = false;
 	const durField = fields.time ?? fields.hours ?? fields.duration;
 	if (durField) {
 		hours = parseDuration(durField);
@@ -88,6 +104,7 @@ export function parseBillableLine(rawLine: string, ctx: ParseContext): ParsedEnt
 		if (range) {
 			hours = parseDuration(range[0]);
 			working = working.replace(range[0], " ");
+			durFromLine = true;
 		}
 	}
 	if (hours === null) {
@@ -95,14 +112,25 @@ export function parseBillableLine(rawLine: string, ctx: ParseContext): ParsedEnt
 		if (dur) {
 			hours = parseDuration(dur[0]);
 			working = working.replace(dur[0], " ");
+			durFromLine = true;
 		}
 	}
 	if (hours === null || hours <= 0) return null;
 
+	// Ambiguity guard: if the duration came from a loose token on the line and
+	// ANOTHER duration/range token still remains (e.g. "1h morning 2h afternoon"),
+	// the total is ambiguous. Return null so the line is SURFACED as unparsed
+	// rather than silently billing only the first token and undercounting. A
+	// duration from an inline [time::] field is authoritative, so loose tokens are
+	// then just prose and don't trigger this.
+	if (durFromLine && (TIME_RANGE_RE.test(working) || DURATION_RE.test(working))) {
+		return null;
+	}
+
 	// Description: whatever's left after removing tags and tokens.
 	const description = working
-		.replace(/(^|\s)#billable\b/gi, " ")
-		.replace(/(^|\s)#[A-Za-z0-9_/-]+/g, " ")
+		.replace(BILLABLE_RE_G, " ")
+		.replace(ANY_TAG_G, " ")
 		.replace(/\s+/g, " ")
 		.trim();
 
