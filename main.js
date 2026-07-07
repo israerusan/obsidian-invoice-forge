@@ -3081,6 +3081,40 @@ function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+// src/time/markdownRegions.ts
+function contentLines(content) {
+  var _a;
+  const lines = content.split(/\r?\n/);
+  const hasFrontmatter = ((_a = lines[0]) == null ? void 0 : _a.trim()) === "---" && lines.slice(1).some((l) => l.trim() === "---");
+  const out = [];
+  let inFrontmatter = false;
+  let fence = null;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (i === 0 && hasFrontmatter && line.trim() === "---") {
+      inFrontmatter = true;
+      continue;
+    }
+    if (inFrontmatter) {
+      if (line.trim() === "---") inFrontmatter = false;
+      continue;
+    }
+    const fenceMatch = /^\s*(`{3,}|~{3,})/.exec(line);
+    if (fence) {
+      if (fenceMatch && fenceMatch[1][0] === fence.char && fenceMatch[1].length >= fence.len) {
+        fence = null;
+      }
+      continue;
+    }
+    if (fenceMatch) {
+      fence = { char: fenceMatch[1][0], len: fenceMatch[1].length };
+      continue;
+    }
+    out.push({ index: i, text: line });
+  }
+  return out;
+}
+
 // src/time/VaultScanner.ts
 var DAILY_NOTE_DATE_RE = /(\d{4}-\d{2}-\d{2})/;
 var VaultScanner = class {
@@ -3102,24 +3136,7 @@ var VaultScanner = class {
       const cache = this.app.metadataCache.getFileCache(file);
       const defaultDate = this.resolveNoteDate(file, cache);
       const ctx = { defaultDate, clientNames };
-      const fileLines = content.split(/\r?\n/);
-      let inFrontmatter = false;
-      let inFence = false;
-      for (let i = 0; i < fileLines.length; i++) {
-        const line = fileLines[i];
-        if (i === 0 && line.trim() === "---") {
-          inFrontmatter = true;
-          continue;
-        }
-        if (inFrontmatter) {
-          if (line.trim() === "---") inFrontmatter = false;
-          continue;
-        }
-        if (/^\s*(```|~~~)/.test(line)) {
-          inFence = !inFence;
-          continue;
-        }
-        if (inFence) continue;
+      for (const { index: i, text: line } of contentLines(content)) {
         const parsed = parseBillableLine(line, ctx);
         if (!parsed) {
           if (/(^|\s)#billable\b/i.test(line) && !/\[invoice::/i.test(line)) {
@@ -3413,8 +3430,8 @@ var ReminderManager = class {
     if (!this.plugin.settings.isPro || !this.plugin.settings.reminderEnabled) return;
     const today = toISODate(/* @__PURE__ */ new Date());
     const soon = toISODate(addDays2(/* @__PURE__ */ new Date(), this.plugin.settings.reminderDaysBefore));
-    const folder = this.plugin.settings.invoiceFolder;
-    const files = this.plugin.app.vault.getMarkdownFiles().filter((f) => !folder || f.path.startsWith(folder + "/"));
+    const folder = this.plugin.invoiceFolderPath();
+    const files = this.plugin.app.vault.getMarkdownFiles().filter((f) => f.path.startsWith(folder + "/"));
     const due = [];
     const overdue = [];
     for (const file of files) {
@@ -3649,21 +3666,32 @@ ${summary}${warn}`, 8e3);
     this.settings.pendingInvoice = null;
     await this.saveSettings();
   }
+  // The normalized, filesystem-safe folder where invoice notes live. Shared by
+  // invoice creation and the reminder scan so they always agree on the location
+  // even when the user's setting has a stray slash or an invalid path character.
+  invoiceFolderPath() {
+    return (0, import_obsidian6.normalizePath)(safeFolderPath(this.settings.invoiceFolder || "Invoices"));
+  }
   // Reserve the next invoice number and a non-colliding file path. Increments
-  // nextSeq once; if that number's file already exists, the FILE name is
-  // suffixed (the number is preserved) so we never overwrite an existing note.
+  // nextSeq once; if that number's file already exists, BOTH the number and the
+  // file name are suffixed so persisted invoice numbers stay unique — otherwise
+  // a numberTemplate without a {seq} token (e.g. "INV-{YYYY}-{MM}") would emit
+  // the identical number on every invoice in the period, and rollback/unmark
+  // (which keys on the number) would then hit the wrong invoice's markers.
   reserveInvoicePath(issueDate) {
-    const folder = (0, import_obsidian6.normalizePath)(this.settings.invoiceFolder || "Invoices");
-    const number = formatInvoiceNumber(
+    const folder = this.invoiceFolderPath();
+    const baseNumber = formatInvoiceNumber(
       this.settings.numberTemplate,
       this.settings.nextSeq,
       /* @__PURE__ */ new Date(issueDate + "T00:00:00")
     );
     this.settings.nextSeq += 1;
+    let number = baseNumber;
     let path = (0, import_obsidian6.normalizePath)(`${folder}/${safeFileName(number)}.md`);
     let suffix = 2;
     while (this.app.vault.getAbstractFileByPath(path)) {
-      path = (0, import_obsidian6.normalizePath)(`${folder}/${safeFileName(number)} ${suffix}.md`);
+      number = `${baseNumber}-${suffix}`;
+      path = (0, import_obsidian6.normalizePath)(`${folder}/${safeFileName(number)}.md`);
       suffix += 1;
     }
     return { number, path, folder };
@@ -3730,6 +3758,9 @@ ${summary}${warn}`, 8e3);
 };
 function safeFileName(name) {
   return name.replace(/[\\/:*?"<>|]/g, "-");
+}
+function safeFolderPath(path) {
+  return path.split("/").map((seg) => seg.replace(/[\\:*?"<>|]/g, "-").trim()).filter((seg) => seg.length > 0).join("/");
 }
 function normalizeClient(raw) {
   const str = (v) => typeof v === "string" ? v : "";

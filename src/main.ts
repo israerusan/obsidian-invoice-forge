@@ -241,22 +241,34 @@ export default class InvoiceForgePlugin extends Plugin {
 		await this.saveSettings();
 	}
 
+	// The normalized, filesystem-safe folder where invoice notes live. Shared by
+	// invoice creation and the reminder scan so they always agree on the location
+	// even when the user's setting has a stray slash or an invalid path character.
+	invoiceFolderPath(): string {
+		return normalizePath(safeFolderPath(this.settings.invoiceFolder || "Invoices"));
+	}
+
 	// Reserve the next invoice number and a non-colliding file path. Increments
-	// nextSeq once; if that number's file already exists, the FILE name is
-	// suffixed (the number is preserved) so we never overwrite an existing note.
+	// nextSeq once; if that number's file already exists, BOTH the number and the
+	// file name are suffixed so persisted invoice numbers stay unique — otherwise
+	// a numberTemplate without a {seq} token (e.g. "INV-{YYYY}-{MM}") would emit
+	// the identical number on every invoice in the period, and rollback/unmark
+	// (which keys on the number) would then hit the wrong invoice's markers.
 	private reserveInvoicePath(issueDate: string): { number: string; path: string; folder: string } {
-		const folder = normalizePath(this.settings.invoiceFolder || "Invoices");
-		const number = formatInvoiceNumber(
+		const folder = this.invoiceFolderPath();
+		const baseNumber = formatInvoiceNumber(
 			this.settings.numberTemplate,
 			this.settings.nextSeq,
 			new Date(issueDate + "T00:00:00")
 		);
 		this.settings.nextSeq += 1;
 
+		let number = baseNumber;
 		let path = normalizePath(`${folder}/${safeFileName(number)}.md`);
 		let suffix = 2;
 		while (this.app.vault.getAbstractFileByPath(path)) {
-			path = normalizePath(`${folder}/${safeFileName(number)} ${suffix}.md`);
+			number = `${baseNumber}-${suffix}`;
+			path = normalizePath(`${folder}/${safeFileName(number)}.md`);
 			suffix += 1;
 		}
 		return { number, path, folder };
@@ -342,6 +354,18 @@ export default class InvoiceForgePlugin extends Plugin {
 
 function safeFileName(name: string): string {
 	return name.replace(/[\\/:*?"<>|]/g, "-");
+}
+
+// Sanitize a user-supplied folder path: scrub characters that are invalid in a
+// path segment (keeping "/" as the separator), and drop empty segments so a
+// leading/trailing/double slash can't produce an un-createable path that burns
+// an invoice number on every failed attempt.
+function safeFolderPath(path: string): string {
+	return path
+		.split("/")
+		.map((seg) => seg.replace(/[\\:*?"<>|]/g, "-").trim())
+		.filter((seg) => seg.length > 0)
+		.join("/");
 }
 
 // Coerce an untrusted persisted client object into a valid Client so the rest of

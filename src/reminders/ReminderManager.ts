@@ -3,7 +3,7 @@ import type InvoiceForgePlugin from "../main";
 import { toISODate } from "../invoice/InvoiceBuilder";
 
 // Pro: scans invoice notes' frontmatter for due/unpaid invoices and surfaces
-// reminders on load and once a day while Obsidian stays open.
+// reminders on load and roughly twice a day while Obsidian stays open.
 export class ReminderManager {
 	private intervalId: number | null = null;
 
@@ -30,10 +30,13 @@ export class ReminderManager {
 		const today = toISODate(new Date());
 		const soon = toISODate(addDays(new Date(), this.plugin.settings.reminderDaysBefore));
 
-		const folder = this.plugin.settings.invoiceFolder;
+		// Use the SAME normalized/sanitized folder as invoice creation, so a folder
+		// setting with a stray leading/trailing slash (or invalid char) can't make
+		// the scan match nothing and silently drop every reminder.
+		const folder = this.plugin.invoiceFolderPath();
 		const files = this.plugin.app.vault
 			.getMarkdownFiles()
-			.filter((f) => !folder || f.path.startsWith(folder + "/"));
+			.filter((f) => f.path.startsWith(folder + "/"));
 
 		const due: string[] = [];
 		const overdue: string[] = [];

@@ -1,6 +1,7 @@
 import { App, TFile } from "obsidian";
 import type { Client, TimeEntry } from "../model/types";
 import { lineMatchesEntry, markLineBilled, parseBillableLine, unmarkLineBilled, type ParseContext } from "./entryParser";
+import { contentLines } from "./markdownRegions";
 import { toISODate } from "../invoice/InvoiceBuilder";
 
 const DAILY_NOTE_DATE_RE = /(\d{4}-\d{2}-\d{2})/;
@@ -42,28 +43,10 @@ export class VaultScanner {
 			const defaultDate = this.resolveNoteDate(file, cache);
 			const ctx: ParseContext = { defaultDate, clientNames };
 
-			const fileLines = content.split(/\r?\n/);
-			let inFrontmatter = false;
-			let inFence = false;
-			for (let i = 0; i < fileLines.length; i++) {
-				const line = fileLines[i];
-				// Skip YAML frontmatter (a --- block only at the very top of the file).
-				if (i === 0 && line.trim() === "---") {
-					inFrontmatter = true;
-					continue;
-				}
-				if (inFrontmatter) {
-					if (line.trim() === "---") inFrontmatter = false;
-					continue;
-				}
-				// Skip fenced code blocks so documentation/example #billable lines
-				// aren't billed as phantom entries.
-				if (/^\s*(```|~~~)/.test(line)) {
-					inFence = !inFence;
-					continue;
-				}
-				if (inFence) continue;
-
+			// Scan only real content lines — frontmatter and fenced code blocks are
+			// excluded (pure, unit-tested in markdownRegions) so example #billable
+			// lines in docs aren't billed and real work below them isn't swallowed.
+			for (const { index: i, text: line } of contentLines(content)) {
 				const parsed = parseBillableLine(line, ctx);
 				if (!parsed) {
 					// Flag a #billable line that didn't parse and isn't already invoiced.

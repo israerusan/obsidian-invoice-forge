@@ -1,5 +1,5 @@
 import assert from "assert";
-import { markLineBilled, unmarkLineBilled, lineMatchesEntry, parseBillableLine } from "./.testable.mjs";
+import { markLineBilled, unmarkLineBilled, lineMatchesEntry, parseBillableLine, contentLines } from "./.testable.mjs";
 
 const ctx = { defaultDate: "2026-06-01", clientNames: { acme: "Acme Corp" } };
 
@@ -106,5 +106,32 @@ assert.ok(!lineMatchesEntry("- #billable #client/acme 3h Auth", rawLine), "chang
 assert.ok(!lineMatchesEntry("- #billable #client/beta 2.5h Auth", rawLine), "changed client does not match");
 assert.ok(!lineMatchesEntry("- #billable #client/acme 2.5h Auth [rate:: 200]", rawLine), "added rate does not match");
 assert.ok(!lineMatchesEntry(rawLine + " [invoice:: INV-1]", rawLine), "already-marked line does not match");
+
+// --- contentLines: frontmatter + fenced-code exclusion, with true line indices ---
+const texts = (c) => contentLines(c).map((l) => l.text);
+const indices = (c) => contentLines(c).map((l) => l.index);
+
+// Real frontmatter (opened AND closed) is excluded; body keeps original indices.
+const fmDoc = "---\ndate: 2026-06-01\n---\n- #billable 1h A\n- plain";
+assert.deepEqual(texts(fmDoc), ["- #billable 1h A", "- plain"]);
+assert.deepEqual(indices(fmDoc), [3, 4], "line indices survive frontmatter stripping");
+
+// A leading `---` with NO closing fence is NOT frontmatter — the billable line
+// below must survive (regression: previously swallowed the rest of the file).
+const unterminated = "---\n- #billable #client/acme 2h Fixed the parser";
+assert.deepEqual(texts(unterminated), ["---", "- #billable #client/acme 2h Fixed the parser"]);
+
+// A `#billable` line inside a ``` fence is excluded (documentation example).
+const fenced = "before\n```\n- #billable 9h SHOULD NOT BILL\n```\n- #billable 1h real";
+assert.deepEqual(texts(fenced), ["before", "- #billable 1h real"]);
+
+// A `~~~` line inside a ``` block does NOT close it — the billable line between
+// the two markers stays excluded (regression: single-bool toggle would leak it).
+const mixedFence = "```\n~~~\n- #billable 9h STILL IN CODE\n```\n- #billable 1h out";
+assert.deepEqual(texts(mixedFence), ["- #billable 1h out"]);
+
+// A longer closing fence closes a shorter opener; a too-short run does not.
+const lenFence = "````\n- #billable 9h IN CODE\n```\nstill code\n````\n- #billable 1h out";
+assert.deepEqual(texts(lenFence), ["- #billable 1h out"]);
 
 console.log("parser tests passed");
