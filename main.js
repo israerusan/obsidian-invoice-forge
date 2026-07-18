@@ -2303,7 +2303,7 @@ var DEFAULT_SETTINGS = {
   defaultPeriodDays: 30
 };
 function slugify(name) {
-  return name.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "client";
+  return name.toLowerCase().trim().replace(/[^\p{L}\p{N}]+/gu, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "client";
 }
 
 // src/ui/SettingTab.ts
@@ -2665,8 +2665,9 @@ function summarizeEntries(entries, baseRate, taxRate, currency = "USD") {
   const lines = entries.map((e) => {
     var _a;
     const rate = roundMoney(finite((_a = e.rate) != null ? _a : safeBase, safeBase), digits);
-    const amount = roundMoney(e.hours * rate, digits);
-    return { date: e.date, description: e.description || "Work", hours: e.hours, rate, amount };
+    const hours = finite(e.hours, 0);
+    const amount = roundMoney(hours * rate, digits);
+    return { date: e.date, description: e.description || "Work", hours: round2(hours), rate, amount };
   });
   const subtotal = roundMoney(lines.reduce((sum, l) => sum + l.amount, 0), digits);
   const taxAmount = roundMoney(subtotal * safeTaxRate / 100, digits);
@@ -2746,8 +2747,27 @@ var InvoiceModal = class extends import_obsidian3.Modal {
     void this.loadEntries();
   }
   async loadEntries() {
-    this.entries = await this.plugin.scanner.scan(this.plugin.settings.clients);
+    try {
+      this.entries = await this.plugin.scanner.scan(this.plugin.settings.clients);
+    } catch (err) {
+      this.renderScanError(err);
+      return;
+    }
     this.render();
+  }
+  renderScanError(err) {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.createDiv({ cls: "if-warn" }).createEl("p", {
+      text: `Couldn't scan the vault for #billable entries: ${err instanceof Error ? err.message : String(err)}`
+    });
+    new import_obsidian3.Setting(contentEl).addButton(
+      (b) => b.setButtonText("Retry").setCta().onClick(() => {
+        contentEl.empty();
+        contentEl.createEl("p", { text: "Scanning vault for #billable entries\u2026", cls: "if-muted" });
+        void this.loadEntries();
+      })
+    );
   }
   clientOptions() {
     const opts = [];
@@ -2944,9 +2964,19 @@ var _LicenseManager = class _LicenseManager {
       if (!import_tweetnacl.default.sign.detached.verify(payloadBytes, signature, publicKey)) {
         return { valid: false, error: "Invalid license signature." };
       }
-      const payload = JSON.parse(new TextDecoder().decode(payloadBytes));
+      const parsed = JSON.parse(new TextDecoder().decode(payloadBytes));
+      if (!parsed || typeof parsed !== "object") {
+        return { valid: false, error: "Malformed license payload." };
+      }
+      const payload = parsed;
       if (payload.product !== _LicenseManager.PRODUCT) {
         return { valid: false, error: "License is for a different product." };
+      }
+      if (typeof payload.email !== "string" || !payload.email.trim()) {
+        return { valid: false, error: "License payload is missing an email." };
+      }
+      if (typeof payload.issued !== "string" || !payload.issued.trim()) {
+        return { valid: false, error: "License payload is missing an issue date." };
       }
       return { valid: true, email: payload.email };
     } catch (e) {
@@ -2983,7 +3013,7 @@ function parseTimeRange(token) {
   if (end < start) end += 24 * 60;
   const minutes = end - start;
   if (minutes <= 0) return null;
-  return round2(minutes / 60);
+  return minutes / 60;
 }
 function parseDuration(token) {
   const trimmed = token.trim();
@@ -2992,7 +3022,7 @@ function parseDuration(token) {
   if (range !== null) return range;
   if (/^\d+(?:\.\d+)?$/.test(trimmed)) {
     const n = Number(trimmed);
-    return n > 0 ? round2(n) : null;
+    return n > 0 ? n : null;
   }
   const m = HM_RE.exec(trimmed);
   if (!m || m[1] === void 0 && m[2] === void 0) return null;
@@ -3000,14 +3030,14 @@ function parseDuration(token) {
   const mins = m[2] !== void 0 ? Number(m[2]) : 0;
   if (m[1] !== void 0 && mins >= 60) return null;
   const total = hours + mins / 60;
-  return total > 0 ? round2(total) : null;
+  return total > 0 ? total : null;
 }
 
 // src/time/entryParser.ts
 var INVOICE_FIELD = "invoice";
 var BILLABLE_RE = /(^|\s)#billable(?![\w-])/i;
 var BILLABLE_RE_G = /(^|\s)#billable(?![\w-])/gi;
-var CLIENT_TAG_RE = /(^|\s)#client\/([\p{L}\p{N}_-]+)/u;
+var CLIENT_TAG_RE = /(^|\s)#client\/([\p{L}\p{N}_-]+)(?:\/[\p{L}\p{N}_-]+)*/u;
 var INLINE_FIELD_RE = /\[([a-z]+)::\s*([^\]]+)\]/gi;
 var TIME_RANGE_RE = /\b\d{1,2}:\d{2}\s*-\s*\d{1,2}:\d{2}\b/;
 var DURATION_RE = /\b\d+(?:\.\d+)?h(?:\s*\d+m)?\b|\b\d+m\b/i;
@@ -3055,8 +3085,9 @@ function parseBillableLine(rawLine, ctx) {
   let hours = null;
   let durFromLine = false;
   const durField = (_c = (_b = fields.time) != null ? _b : fields.hours) != null ? _c : fields.duration;
-  if (durField) {
+  if (durField !== void 0 && durField !== "") {
     hours = parseDuration(durField);
+    if (hours === null) return null;
   }
   if (hours === null) {
     const range = TIME_RANGE_RE.exec(working);
@@ -3095,6 +3126,9 @@ function markLineBilled(rawLine, invoiceNumber) {
   if (!BILLABLE_RE.test(rawLine) || new RegExp(`\\[${INVOICE_FIELD}::`, "i").test(rawLine)) return rawLine;
   return `${rawLine.trimEnd()} [${INVOICE_FIELD}:: ${invoiceNumber}]`;
 }
+function lineHasInvoiceMarker(rawLine, invoiceNumber) {
+  return new RegExp(`\\[${INVOICE_FIELD}::\\s*${escapeRegExp(invoiceNumber)}\\s*\\]`, "i").test(rawLine);
+}
 function unmarkLineBilled(rawLine, invoiceNumber) {
   const re = new RegExp(`\\s*\\[${INVOICE_FIELD}::\\s*${escapeRegExp(invoiceNumber)}\\s*\\]`, "gi");
   return rawLine.replace(re, "");
@@ -3124,7 +3158,7 @@ function frontmatterDate(content) {
     const m = /^date\s*:\s*(.+)$/.exec(lines[i]);
     if (m) {
       const iso = ISO_DATE_RE.exec(m[1]);
-      return iso ? iso[1] : null;
+      return iso && isValidISODate(iso[1]) ? iso[1] : null;
     }
   }
   return null;
@@ -3164,6 +3198,9 @@ function contentLines(content) {
 
 // src/time/VaultScanner.ts
 var DAILY_NOTE_DATE_RE = /(\d{4}-\d{2}-\d{2})/;
+function detectNewline(content) {
+  return content.includes("\r\n") ? "\r\n" : "\n";
+}
 var VaultScanner = class {
   constructor(app) {
     this.app = app;
@@ -3243,6 +3280,7 @@ var VaultScanner = class {
         const file = this.app.vault.getAbstractFileByPath(path);
         if (!(file instanceof import_obsidian4.TFile)) throw new Error(`Source note no longer exists: ${path}`);
         await this.app.vault.process(file, (content) => {
+          const newline = detectNewline(content);
           const lines = content.split(/\r?\n/);
           for (const entry of fileEntries) {
             if (entry.line >= lines.length || !lineMatchesEntry(lines[entry.line], entry.raw)) {
@@ -3250,12 +3288,12 @@ var VaultScanner = class {
             }
             lines[entry.line] = markLineBilled(lines[entry.line], invoiceNumber);
           }
-          return lines.join("\n");
+          return lines.join(newline);
         });
-        written.push(path);
+        written.push(...fileEntries);
       }
     } catch (error) {
-      const failedRollback = await this.unmarkPaths(written, invoiceNumber);
+      const failedRollback = await this.unmarkBilled(written, invoiceNumber);
       if (failedRollback.length) {
         throw new Error(
           `${error instanceof Error ? error.message : String(error)} (could not fully undo markers in: ${failedRollback.join(", ")} \u2014 check these notes).`
@@ -3264,21 +3302,28 @@ var VaultScanner = class {
       throw error;
     }
   }
-  // Remove an invoice's markers from the given source notes (rollback / undo).
-  // Returns the paths that could NOT be cleaned so the caller can surface them.
+  // Remove an invoice's markers from EXACTLY the given entries' source lines
+  // (rollback / undo). Targeting the captured line indices — rather than stripping
+  // every `[invoice:: <number>]` in the file — means a reused/duplicate invoice
+  // number (e.g. from a {seq}-less template plus a deleted-then-recreated invoice)
+  // can't resurrect unrelated, already-billed work elsewhere in the note. Returns
+  // the paths that could NOT be cleaned so the caller can surface them.
   async unmarkBilled(entries, invoiceNumber) {
-    return this.unmarkPaths([...this.groupByPath(entries).keys()], invoiceNumber);
-  }
-  async unmarkPaths(paths, invoiceNumber) {
     const failed = [];
-    for (const path of paths) {
+    for (const [path, fileEntries] of this.groupByPath(entries)) {
       const file = this.app.vault.getAbstractFileByPath(path);
       if (!(file instanceof import_obsidian4.TFile)) continue;
       try {
-        await this.app.vault.process(
-          file,
-          (content) => content.split(/\r?\n/).map((line) => unmarkLineBilled(line, invoiceNumber)).join("\n")
-        );
+        await this.app.vault.process(file, (content) => {
+          const newline = detectNewline(content);
+          const lines = content.split(/\r?\n/);
+          for (const entry of fileEntries) {
+            if (entry.line < lines.length && lineHasInvoiceMarker(lines[entry.line], invoiceNumber)) {
+              lines[entry.line] = unmarkLineBilled(lines[entry.line], invoiceNumber);
+            }
+          }
+          return lines.join(newline);
+        });
       } catch (e) {
         failed.push(path);
       }
@@ -3294,11 +3339,12 @@ var VaultScanner = class {
     const fromContent = frontmatterDate(content);
     if (fromContent) return fromContent;
     const fmDate = (_a = cache == null ? void 0 : cache.frontmatter) == null ? void 0 : _a.date;
-    if (typeof fmDate === "string" && DAILY_NOTE_DATE_RE.test(fmDate)) {
-      return DAILY_NOTE_DATE_RE.exec(fmDate)[1];
+    if (typeof fmDate === "string") {
+      const m = DAILY_NOTE_DATE_RE.exec(fmDate);
+      if (m && isValidISODate(m[1])) return m[1];
     }
     const fromName = DAILY_NOTE_DATE_RE.exec(file.basename);
-    if (fromName) return fromName[1];
+    if (fromName && isValidISODate(fromName[1])) return fromName[1];
     return toISODate(new Date(file.stat.mtime));
   }
 };
@@ -3317,15 +3363,15 @@ function renderInvoiceMarkdown(inv, business) {
   lines.push("tags: [invoice]");
   lines.push("---");
   lines.push("");
-  lines.push(`# Invoice ${inv.number}`);
+  lines.push(`# Invoice ${mdInline(inv.number)}`);
   lines.push("");
-  lines.push(`**From:** ${business.name || "Your business"}`);
-  if (business.address) lines.push(business.address.split("\n").join(" \xB7 "));
-  if (business.email) lines.push(business.email);
+  lines.push(`**From:** ${mdInline(business.name) || "Your business"}`);
+  if (business.address) lines.push(mdInline(business.address.split("\n").join(" \xB7 ")));
+  if (business.email) lines.push(mdInline(business.email));
   lines.push("");
-  lines.push(`**Bill to:** ${inv.clientName}`);
-  if (inv.clientAddress) lines.push(inv.clientAddress.split("\n").join(" \xB7 "));
-  if (inv.clientEmail) lines.push(inv.clientEmail);
+  lines.push(`**Bill to:** ${mdInline(inv.clientName)}`);
+  if (inv.clientAddress) lines.push(mdInline(inv.clientAddress.split("\n").join(" \xB7 ")));
+  if (inv.clientEmail) lines.push(mdInline(inv.clientEmail));
   lines.push("");
   lines.push(`**Issue date:** ${inv.issueDate}  |  **Due date:** ${inv.dueDate}`);
   lines.push(`**Period:** ${inv.periodStart} \u2192 ${inv.periodEnd}`);
@@ -3340,7 +3386,7 @@ function renderInvoiceMarkdown(inv, business) {
   lines.push("");
   lines.push(`**Subtotal:** ${formatMoney(inv.subtotal, inv.currency)}`);
   if (inv.taxRate > 0) {
-    lines.push(`**${inv.taxLabel} (${inv.taxRate}%):** ${formatMoney(inv.taxAmount, inv.currency)}`);
+    lines.push(`**${mdInline(inv.taxLabel)} (${inv.taxRate}%):** ${formatMoney(inv.taxAmount, inv.currency)}`);
   }
   lines.push(`**Total due:** ${formatMoney(inv.total, inv.currency)}`);
   if (inv.notes) {
@@ -3442,19 +3488,23 @@ function esc(s) {
 function nl2br(s) {
   return esc(s != null ? s : "").replace(/\n/g, "<br/>");
 }
+function mdInline(s) {
+  return (s != null ? s : "").replace(/[\r\n]+/g, " ").replace(/(!?)\[\[/g, "$1\\[\\[");
+}
 function escapePipe(s) {
-  return (s != null ? s : "").replace(/\\/g, "\\\\").replace(/\|/g, "\\|");
+  return (s != null ? s : "").replace(/\\/g, "\\\\").replace(/\|/g, "\\|").replace(/(!?)\[\[/g, "$1\\[\\[");
 }
 function escapeYaml(s) {
   return (s != null ? s : "").replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/[\r\n]+/g, " ");
 }
 
 // src/invoice/numbering.ts
+var MAX_SEQ_PAD = 12;
 function formatInvoiceNumber(template, seq, date) {
   const yyyy = String(date.getFullYear());
   const mm = String(date.getMonth() + 1).padStart(2, "0");
   const dd = String(date.getDate()).padStart(2, "0");
-  return template.replace(/\{YYYY\}/g, yyyy).replace(/\{YY\}/g, yyyy.slice(-2)).replace(/\{MM\}/g, mm).replace(/\{DD\}/g, dd).replace(/\{seq:(\d+)\}/g, (_, n) => String(seq).padStart(Number(n), "0")).replace(/\{seq\}/g, String(seq));
+  return template.replace(/\{YYYY\}/g, yyyy).replace(/\{YY\}/g, yyyy.slice(-2)).replace(/\{MM\}/g, mm).replace(/\{DD\}/g, dd).replace(/\{seq:(\d+)\}/g, (_, n) => String(seq).padStart(Math.min(Number(n), MAX_SEQ_PAD), "0")).replace(/\{seq\}/g, String(seq));
 }
 
 // src/reminders/ReminderManager.ts
@@ -3482,17 +3532,17 @@ var ReminderManager = class {
     if (!this.plugin.settings.isPro || !this.plugin.settings.reminderEnabled) return;
     const today = toISODate(/* @__PURE__ */ new Date());
     const soon = toISODate(addDays2(/* @__PURE__ */ new Date(), this.plugin.settings.reminderDaysBefore));
-    const folder = this.plugin.invoiceFolderPath();
-    const files = this.plugin.app.vault.getMarkdownFiles().filter((f) => f.path.startsWith(folder + "/"));
+    const prefix = (this.plugin.invoiceFolderPath() + "/").toLowerCase();
+    const files = this.plugin.app.vault.getMarkdownFiles().filter((f) => f.path.toLowerCase().startsWith(prefix));
     const due = [];
     const overdue = [];
     for (const file of files) {
       const fm = (_a = this.plugin.app.metadataCache.getFileCache(file)) == null ? void 0 : _a.frontmatter;
       if (!fm || fm.invoice === void 0) continue;
-      const status = typeof fm.status === "string" ? fm.status : "unpaid";
+      const status = typeof fm.status === "string" ? fm.status.trim().toLowerCase() : "unpaid";
       if (status === "paid") continue;
-      const dueDate = typeof fm.due === "string" ? fm.due : "";
-      if (!dueDate) continue;
+      const dueDate = normalizeDue(fm.due);
+      if (!isValidISODate(dueDate)) continue;
       const invoiceLabel = fmString(fm.invoice);
       const clientLabel = fmString(fm.client) || "?";
       const label = `${invoiceLabel} (${clientLabel}) due ${dueDate}`;
@@ -3512,6 +3562,11 @@ ${due.join("\n")}`, 8e3);
 function fmString(value) {
   if (typeof value === "string") return value;
   if (typeof value === "number") return String(value);
+  return "";
+}
+function normalizeDue(value) {
+  if (typeof value === "string") return value.trim();
+  if (value instanceof Date && !Number.isNaN(value.getTime())) return toISODate(value);
   return "";
 }
 function addDays2(d, days) {
@@ -3686,6 +3741,7 @@ ${summary}${warn}`, 8e3);
   // Replay a journaled invoice left behind by a crash: create the note if it's
   // missing and mark any entries that weren't marked, then clear the journal.
   async recoverPendingInvoice() {
+    var _a;
     const pending = this.settings.pendingInvoice;
     if (!pending) return;
     if (typeof pending.path !== "string" || typeof pending.markdown !== "string" || !Array.isArray(pending.entries)) {
@@ -3696,24 +3752,49 @@ ${summary}${warn}`, 8e3);
     if (this.creating) return;
     this.creating = true;
     try {
+      const entries = pending.entries.filter(
+        (e) => !!e && typeof e === "object" && typeof e.sourcePath === "string" && typeof e.raw === "string" && Number.isInteger(e.line)
+      );
+      const byPath = /* @__PURE__ */ new Map();
+      for (const e of entries) {
+        const group = (_a = byPath.get(e.sourcePath)) != null ? _a : [];
+        group.push(e);
+        byPath.set(e.sourcePath, group);
+      }
+      for (const [path, fileEntries] of byPath) {
+        const file = this.app.vault.getAbstractFileByPath(path);
+        if (!(file instanceof import_obsidian6.TFile)) continue;
+        const lines = (await this.app.vault.cachedRead(file)).split(/\r?\n/);
+        for (const entry of fileEntries) {
+          if (entry.line >= lines.length) continue;
+          const ln = lines[entry.line];
+          if (lineHasInvoiceMarker(ln, pending.number)) continue;
+          if (lineMatchesEntry(ln, entry.raw)) continue;
+          new import_obsidian6.Notice(
+            `Invoice ${pending.number} couldn't be auto-recovered: a billable line in "${path}" changed since it was interrupted. Recreate the invoice to reconcile \u2014 your entries are untouched.`,
+            12e3
+          );
+          return;
+        }
+      }
       const existing = this.app.vault.getAbstractFileByPath(pending.path);
       if (!(existing instanceof import_obsidian6.TFile)) {
         const slash = pending.path.lastIndexOf("/");
         if (slash > 0) await this.ensureFolder(pending.path.slice(0, slash));
         await this.app.vault.create(pending.path, pending.markdown);
       }
-      for (const entry of pending.entries) {
-        if (!entry || typeof entry !== "object") continue;
-        const { sourcePath, line, raw } = entry;
-        if (typeof sourcePath !== "string" || typeof raw !== "string" || !Number.isInteger(line)) continue;
-        const file = this.app.vault.getAbstractFileByPath(sourcePath);
+      for (const [path, fileEntries] of byPath) {
+        const file = this.app.vault.getAbstractFileByPath(path);
         if (!(file instanceof import_obsidian6.TFile)) continue;
         await this.app.vault.process(file, (content) => {
+          const newline = detectNewline(content);
           const lines = content.split(/\r?\n/);
-          if (line < lines.length && lineMatchesEntry(lines[line], raw)) {
-            lines[line] = markLineBilled(lines[line], pending.number);
+          for (const entry of fileEntries) {
+            if (entry.line < lines.length && lineMatchesEntry(lines[entry.line], entry.raw)) {
+              lines[entry.line] = markLineBilled(lines[entry.line], pending.number);
+            }
           }
-          return lines.join("\n");
+          return lines.join(newline);
         });
       }
       new import_obsidian6.Notice(`Recovered an interrupted invoice: ${pending.number}.`);
@@ -3801,24 +3882,37 @@ ${summary}${warn}`, 8e3);
       delete loaded[key];
     }
     this.settings = Object.assign({}, DEFAULT_SETTINGS, loaded);
-    const num = (v, fallback) => typeof v === "number" && Number.isFinite(v) ? v : fallback;
+    const nonNeg = (v, fallback) => typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : fallback;
     const posInt = (v, fallback) => typeof v === "number" && Number.isInteger(v) && v > 0 ? v : fallback;
+    const str = (v, fallback) => typeof v === "string" ? v : fallback;
+    const bool = (v, fallback) => typeof v === "boolean" ? v : fallback;
+    this.settings.licenseKey = str(this.settings.licenseKey, DEFAULT_SETTINGS.licenseKey);
+    this.settings.licenseEmail = str(this.settings.licenseEmail, DEFAULT_SETTINGS.licenseEmail);
+    this.settings.purchaseUrl = str(this.settings.purchaseUrl, DEFAULT_SETTINGS.purchaseUrl) || DEFAULT_SETTINGS.purchaseUrl;
+    this.settings.invoiceFolder = str(this.settings.invoiceFolder, DEFAULT_SETTINGS.invoiceFolder);
+    this.settings.numberTemplate = str(this.settings.numberTemplate, DEFAULT_SETTINGS.numberTemplate) || DEFAULT_SETTINGS.numberTemplate;
+    this.settings.openAfterCreate = bool(this.settings.openAfterCreate, DEFAULT_SETTINGS.openAfterCreate);
+    this.settings.reminderEnabled = bool(this.settings.reminderEnabled, DEFAULT_SETTINGS.reminderEnabled);
     const business = loaded.business;
     this.settings.business = normalizeBusiness(
       business && typeof business === "object" ? business : {}
     );
     this.settings.nextSeq = posInt(this.settings.nextSeq, DEFAULT_SETTINGS.nextSeq);
-    this.settings.dueInDays = num(this.settings.dueInDays, DEFAULT_SETTINGS.dueInDays);
-    this.settings.reminderDaysBefore = num(this.settings.reminderDaysBefore, DEFAULT_SETTINGS.reminderDaysBefore);
-    this.settings.defaultPeriodDays = num(this.settings.defaultPeriodDays, DEFAULT_SETTINGS.defaultPeriodDays);
+    this.settings.dueInDays = nonNeg(this.settings.dueInDays, DEFAULT_SETTINGS.dueInDays);
+    this.settings.reminderDaysBefore = nonNeg(this.settings.reminderDaysBefore, DEFAULT_SETTINGS.reminderDaysBefore);
+    this.settings.defaultPeriodDays = nonNeg(this.settings.defaultPeriodDays, DEFAULT_SETTINGS.defaultPeriodDays);
     this.settings.clients = Array.isArray(loaded.clients) ? loaded.clients.filter((c) => !!c && typeof c === "object").map(normalizeClient) : [];
   }
   async saveSettings() {
     await this.saveData(this.settings);
   }
 };
+var RESERVED_WINDOWS_NAMES = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
 function safeFileName(name) {
-  return name.replace(/[\\/:*?"<>|]/g, "-");
+  let safe = name.replace(/[\\/:*?"<>|]/g, "-").replace(/[. ]+$/, "").trim();
+  if (!safe) safe = "invoice";
+  if (RESERVED_WINDOWS_NAMES.test(safe)) safe = `_${safe}`;
+  return safe;
 }
 function safeFolderPath(path) {
   return path.split("/").map((seg) => seg.replace(/[\\:*?"<>|]/g, "-").trim()).filter((seg) => seg.length > 0).join("/");

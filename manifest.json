@@ -1,7 +1,7 @@
 {
 	"id": "invoice-forge",
 	"name": "Invoice Forge",
-	"version": "1.2.0",
+	"version": "1.2.1",
 	"minAppVersion": "1.5.0",
 	"description": "Find the billable work hidden in your notes and turn it into an invoice. Tag work #billable, generate numbered invoices, and mark each billed so nothing is missed or billed twice. Pro adds PDF export, tax, multi-currency, and due-date reminders.",
 	"author": "iavil",

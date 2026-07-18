@@ -3,6 +3,8 @@
 // in docs from being billed, and keeps real work from being swallowed) can be
 // unit-tested without an Obsidian vault.
 
+import { isValidISODate } from "../invoice/InvoiceBuilder";
+
 export interface ContentLine {
 	index: number; // 0-based line number in the original file
 	text: string;
@@ -36,7 +38,10 @@ export function frontmatterDate(content: string): string | null {
 		const m = /^date\s*:\s*(.+)$/.exec(lines[i]);
 		if (m) {
 			const iso = ISO_DATE_RE.exec(m[1]);
-			return iso ? iso[1] : null;
+			// Require a REAL calendar date — an impossible value like 2026-02-30 or
+			// 2026-99-99 must not become the note date (it would mis-period every
+			// entry in the note, since filtering compares date strings lexically).
+			return iso && isValidISODate(iso[1]) ? iso[1] : null;
 		}
 	}
 	return null;

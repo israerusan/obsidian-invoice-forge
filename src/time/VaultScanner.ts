@@ -1,10 +1,15 @@
 import { App, TFile } from "obsidian";
 import type { Client, TimeEntry } from "../model/types";
-import { lineMatchesEntry, markLineBilled, parseBillableLine, unmarkLineBilled, type ParseContext } from "./entryParser";
+import { lineHasInvoiceMarker, lineMatchesEntry, markLineBilled, parseBillableLine, unmarkLineBilled, type ParseContext } from "./entryParser";
 import { contentLines, frontmatterDate } from "./markdownRegions";
-import { toISODate } from "../invoice/InvoiceBuilder";
+import { isValidISODate, toISODate } from "../invoice/InvoiceBuilder";
 
 const DAILY_NOTE_DATE_RE = /(\d{4}-\d{2}-\d{2})/;
+
+// A note's dominant newline style, so edits preserve it instead of forcing LF.
+export function detectNewline(content: string): string {
+	return content.includes("\r\n") ? "\r\n" : "\n";
+}
 
 // A #billable line that couldn't be parsed (e.g. missing/typo'd time). Surfaced
 // so tagged work never silently disappears from an invoice.
@@ -105,13 +110,14 @@ export class VaultScanner {
 			}
 		}
 
-		// Phase 2: apply, tracking written files so we can roll back on failure.
-		const written: string[] = [];
+		// Phase 2: apply, tracking written entries so we can roll back on failure.
+		const written: TimeEntry[] = [];
 		try {
 			for (const [path, fileEntries] of byPath) {
 				const file = this.app.vault.getAbstractFileByPath(path);
 				if (!(file instanceof TFile)) throw new Error(`Source note no longer exists: ${path}`);
 				await this.app.vault.process(file, (content) => {
+					const newline = detectNewline(content);
 					const lines = content.split(/\r?\n/);
 					for (const entry of fileEntries) {
 						// Re-verify against the freshest content before each mark.
@@ -120,12 +126,15 @@ export class VaultScanner {
 						}
 						lines[entry.line] = markLineBilled(lines[entry.line], invoiceNumber);
 					}
-					return lines.join("\n");
+					// Preserve the note's original newline convention so a CRLF (Windows)
+					// note isn't silently rewritten to LF, which would produce a noisy
+					// whole-file diff and needless sync/merge churn just to add a marker.
+					return lines.join(newline);
 				});
-				written.push(path);
+				written.push(...fileEntries);
 			}
 		} catch (error) {
-			const failedRollback = await this.unmarkPaths(written, invoiceNumber);
+			const failedRollback = await this.unmarkBilled(written, invoiceNumber);
 			if (failedRollback.length) {
 				throw new Error(
 					`${error instanceof Error ? error.message : String(error)} (could not fully undo markers in: ${failedRollback.join(", ")} — check these notes).`
@@ -135,24 +144,30 @@ export class VaultScanner {
 		}
 	}
 
-	// Remove an invoice's markers from the given source notes (rollback / undo).
-	// Returns the paths that could NOT be cleaned so the caller can surface them.
+	// Remove an invoice's markers from EXACTLY the given entries' source lines
+	// (rollback / undo). Targeting the captured line indices — rather than stripping
+	// every `[invoice:: <number>]` in the file — means a reused/duplicate invoice
+	// number (e.g. from a {seq}-less template plus a deleted-then-recreated invoice)
+	// can't resurrect unrelated, already-billed work elsewhere in the note. Returns
+	// the paths that could NOT be cleaned so the caller can surface them.
 	async unmarkBilled(entries: TimeEntry[], invoiceNumber: string): Promise<string[]> {
-		return this.unmarkPaths([...this.groupByPath(entries).keys()], invoiceNumber);
-	}
-
-	private async unmarkPaths(paths: string[], invoiceNumber: string): Promise<string[]> {
 		const failed: string[] = [];
-		for (const path of paths) {
+		for (const [path, fileEntries] of this.groupByPath(entries)) {
 			const file = this.app.vault.getAbstractFileByPath(path);
 			if (!(file instanceof TFile)) continue;
 			try {
-				await this.app.vault.process(file, (content) =>
-					content
-						.split(/\r?\n/)
-						.map((line) => unmarkLineBilled(line, invoiceNumber))
-						.join("\n")
-				);
+				await this.app.vault.process(file, (content) => {
+					const newline = detectNewline(content);
+					const lines = content.split(/\r?\n/);
+					for (const entry of fileEntries) {
+						// Only touch the exact line we marked, and only if it still carries
+						// THIS invoice's marker — never a neighbouring or reused marker.
+						if (entry.line < lines.length && lineHasInvoiceMarker(lines[entry.line], invoiceNumber)) {
+							lines[entry.line] = unmarkLineBilled(lines[entry.line], invoiceNumber);
+						}
+					}
+					return lines.join(newline);
+				});
 			} catch {
 				// Best-effort rollback; report (don't mask) so the user can fix it.
 				failed.push(path);
@@ -173,11 +188,14 @@ export class VaultScanner {
 		const fromContent = frontmatterDate(content);
 		if (fromContent) return fromContent;
 		const fmDate: unknown = cache?.frontmatter?.date;
-		if (typeof fmDate === "string" && DAILY_NOTE_DATE_RE.test(fmDate)) {
-			return (DAILY_NOTE_DATE_RE.exec(fmDate) as RegExpExecArray)[1];
+		if (typeof fmDate === "string") {
+			const m = DAILY_NOTE_DATE_RE.exec(fmDate);
+			if (m && isValidISODate(m[1])) return m[1];
 		}
+		// Only trust a filename date that is a REAL calendar date — a file like
+		// "log-2026-99-99.md" must fall through to mtime, not adopt an impossible date.
 		const fromName = DAILY_NOTE_DATE_RE.exec(file.basename);
-		if (fromName) return fromName[1];
+		if (fromName && isValidISODate(fromName[1])) return fromName[1];
 		return toISODate(new Date(file.stat.mtime));
 	}
 }

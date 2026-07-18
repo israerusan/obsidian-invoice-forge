@@ -70,11 +70,16 @@ export const DEFAULT_SETTINGS: InvoiceForgeSettings = {
 	defaultPeriodDays: 30,
 };
 
+// Unicode-aware so it stays consistent with the entry parser's #client/<slug>
+// regex (which accepts any letter/number). Stripping non-ASCII here — as a plain
+// [^a-z0-9] would — turned "Café" into id "caf" while #client/café parsed as
+// "café", so the configured client's rate/currency silently never matched its
+// tagged work. Keeping Unicode letters/digits keeps the two in lockstep.
 export function slugify(name: string): string {
 	return name
 		.toLowerCase()
 		.trim()
-		.replace(/[^a-z0-9]+/g, "-")
+		.replace(/[^\p{L}\p{N}]+/gu, "-")
 		.replace(/^-+|-+$/g, "")
 		.slice(0, 40) || "client";
 }

@@ -19,15 +19,15 @@ export function renderInvoiceMarkdown(inv: Invoice, business: BusinessProfile): 
 	lines.push("tags: [invoice]");
 	lines.push("---");
 	lines.push("");
-	lines.push(`# Invoice ${inv.number}`);
+	lines.push(`# Invoice ${mdInline(inv.number)}`);
 	lines.push("");
-	lines.push(`**From:** ${business.name || "Your business"}`);
-	if (business.address) lines.push(business.address.split("\n").join(" · "));
-	if (business.email) lines.push(business.email);
+	lines.push(`**From:** ${mdInline(business.name) || "Your business"}`);
+	if (business.address) lines.push(mdInline(business.address.split("\n").join(" · ")));
+	if (business.email) lines.push(mdInline(business.email));
 	lines.push("");
-	lines.push(`**Bill to:** ${inv.clientName}`);
-	if (inv.clientAddress) lines.push(inv.clientAddress.split("\n").join(" · "));
-	if (inv.clientEmail) lines.push(inv.clientEmail);
+	lines.push(`**Bill to:** ${mdInline(inv.clientName)}`);
+	if (inv.clientAddress) lines.push(mdInline(inv.clientAddress.split("\n").join(" · ")));
+	if (inv.clientEmail) lines.push(mdInline(inv.clientEmail));
 	lines.push("");
 	lines.push(`**Issue date:** ${inv.issueDate}  |  **Due date:** ${inv.dueDate}`);
 	lines.push(`**Period:** ${inv.periodStart} → ${inv.periodEnd}`);
@@ -42,7 +42,7 @@ export function renderInvoiceMarkdown(inv: Invoice, business: BusinessProfile): 
 	lines.push("");
 	lines.push(`**Subtotal:** ${formatMoney(inv.subtotal, inv.currency)}`);
 	if (inv.taxRate > 0) {
-		lines.push(`**${inv.taxLabel} (${inv.taxRate}%):** ${formatMoney(inv.taxAmount, inv.currency)}`);
+		lines.push(`**${mdInline(inv.taxLabel)} (${inv.taxRate}%):** ${formatMoney(inv.taxAmount, inv.currency)}`);
 	}
 	lines.push(`**Total due:** ${formatMoney(inv.total, inv.currency)}`);
 	if (inv.notes) {
@@ -158,10 +158,22 @@ function esc(s: string): string {
 function nl2br(s: string): string {
 	return esc(s ?? "").replace(/\n/g, "<br/>");
 }
+// Neutralize a single-line Markdown scalar interpolated into the invoice note:
+// collapse newlines (so a pasted multi-line value can't inject new Markdown lines,
+// e.g. a stray heading) and defuse wiki links/embeds so a value like
+// `![[Private note]]` can't transclude unrelated vault content into the invoice.
+function mdInline(s: string): string {
+	return (s ?? "").replace(/[\r\n]+/g, " ").replace(/(!?)\[\[/g, "$1\\[\\[");
+}
+
 function escapePipe(s: string): string {
 	// Escape backslashes first so an authored `\|` can't leave a live column
-	// separator that shifts the table's cells.
-	return (s ?? "").replace(/\\/g, "\\\\").replace(/\|/g, "\\|");
+	// separator that shifts the table's cells, then defuse wiki embeds/links so a
+	// description like `![[secret]]` can't transclude vault content into the table.
+	return (s ?? "")
+		.replace(/\\/g, "\\\\")
+		.replace(/\|/g, "\\|")
+		.replace(/(!?)\[\[/g, "$1\\[\\[");
 }
 function escapeYaml(s: string): string {
 	// This value is emitted as a YAML double-quoted scalar, where both `\` and `"`

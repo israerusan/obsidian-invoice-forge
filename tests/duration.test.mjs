@@ -27,7 +27,10 @@ assert.equal(parseTimeRange("24:00-24:30"), null);
 
 // A malformed minutes component is rejected rather than normalized.
 assert.equal(parseDuration("1h90m"), null, "1h90m is a typo, not 2.5h");
-assert.equal(parseDuration("2h59m"), 2.98);
+// Hours are returned at full precision (not pre-rounded) so money math stays exact.
+assert.equal(parseDuration("2h59m"), 2 + 59 / 60, "2h59m keeps full precision, not 2.98");
+assert.equal(parseDuration("1h1m"), 1 + 1 / 60, "1h1m is 61/60h, not 1.02h");
+assert.equal(parseDuration("1m"), 1 / 60, "a bare minute is not rounded up to 0.02h");
 
 // A field with trailing junk must NOT parse (anchored HM_RE).
 assert.equal(parseDuration("2h typo"), null, "'2h typo' is not a valid duration");

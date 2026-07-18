@@ -30,9 +30,23 @@ export class LicenseManager {
 				return { valid: false, error: "Invalid license signature." };
 			}
 
-			const payload = JSON.parse(new TextDecoder().decode(payloadBytes)) as LicensePayload;
+			// Validate the SHAPE of the signed payload, not just the signature. A
+			// correctly signed but malformed payload (a JSON primitive, or an object
+			// missing email/issued) should not silently enable Pro with a blank email;
+			// this also makes room for future versioned/expiring keys.
+			const parsed: unknown = JSON.parse(new TextDecoder().decode(payloadBytes));
+			if (!parsed || typeof parsed !== "object") {
+				return { valid: false, error: "Malformed license payload." };
+			}
+			const payload = parsed as Partial<LicensePayload>;
 			if (payload.product !== LicenseManager.PRODUCT) {
 				return { valid: false, error: "License is for a different product." };
+			}
+			if (typeof payload.email !== "string" || !payload.email.trim()) {
+				return { valid: false, error: "License payload is missing an email." };
+			}
+			if (typeof payload.issued !== "string" || !payload.issued.trim()) {
+				return { valid: false, error: "License payload is missing an issue date." };
 			}
 
 			return { valid: true, email: payload.email };

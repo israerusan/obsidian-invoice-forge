@@ -24,8 +24,11 @@ export interface ParseContext {
 const BILLABLE_RE = /(^|\s)#billable(?![\w-])/i;
 const BILLABLE_RE_G = /(^|\s)#billable(?![\w-])/gi;
 // Unicode-aware so an accented/non-ASCII slug (#client/café, #client/münchen)
-// is captured whole instead of truncated at the first non-ASCII byte.
-const CLIENT_TAG_RE = /(^|\s)#client\/([\p{L}\p{N}_-]+)/u;
+// is captured whole instead of truncated at the first non-ASCII byte. Nested
+// sub-tags (#client/acme/project-a) are matched WHOLE — the first segment is the
+// client id and the trailing "/project-a" is consumed with the tag so it can't
+// leak into the invoice line-item description.
+const CLIENT_TAG_RE = /(^|\s)#client\/([\p{L}\p{N}_-]+)(?:\/[\p{L}\p{N}_-]+)*/u;
 const INLINE_FIELD_RE = /\[([a-z]+)::\s*([^\]]+)\]/gi;
 const TIME_RANGE_RE = /\b\d{1,2}:\d{2}\s*-\s*\d{1,2}:\d{2}\b/;
 const DURATION_RE = /\b\d+(?:\.\d+)?h(?:\s*\d+m)?\b|\b\d+m\b/i;
@@ -101,8 +104,13 @@ export function parseBillableLine(rawLine: string, ctx: ParseContext): ParsedEnt
 	let hours: number | null = null;
 	let durFromLine = false;
 	const durField = fields.time ?? fields.hours ?? fields.duration;
-	if (durField) {
+	if (durField !== undefined && durField !== "") {
+		// An explicit [time::]/[hours::]/[duration::] field is authoritative. If it's
+		// present but doesn't parse (a typo like [time:: tow]), surface the line as
+		// unparsed instead of silently grabbing a loose number from the description
+		// prose ("…the 3h timeout…") and billing the wrong duration.
 		hours = parseDuration(durField);
+		if (hours === null) return null;
 	}
 	if (hours === null) {
 		const range = TIME_RANGE_RE.exec(working);
@@ -165,6 +173,13 @@ function isProseDate(working: string, match: RegExpExecArray): boolean {
 export function markLineBilled(rawLine: string, invoiceNumber: string): string {
 	if (!BILLABLE_RE.test(rawLine) || new RegExp(`\\[${INVOICE_FIELD}::`, "i").test(rawLine)) return rawLine;
 	return `${rawLine.trimEnd()} [${INVOICE_FIELD}:: ${invoiceNumber}]`;
+}
+
+// True when a line already carries THIS invoice's marker. Used by crash recovery
+// to tell an already-billed line (safe to leave) apart from an unbilled line that
+// still needs marking — so recovery never re-marks or double-counts.
+export function lineHasInvoiceMarker(rawLine: string, invoiceNumber: string): boolean {
+	return new RegExp(`\\[${INVOICE_FIELD}::\\s*${escapeRegExp(invoiceNumber)}\\s*\\]`, "i").test(rawLine);
 }
 
 // Remove a specific invoice marker from a line — used to roll back marks when

@@ -1,6 +1,11 @@
 // Pure duration parsing. Returns hours (number) or null when nothing parses.
 // Supported forms: "2.5h", "2h", "45m", "90m", "1h30m", "1h 30m", and ranges "09:00-11:30".
-import { round2 } from "../invoice/money";
+//
+// Hours are returned at FULL precision (not pre-rounded). Rounding minutes to
+// hundredths of an hour here would compound into real over/under-billing: a bare
+// "1m" would round 0.01666…h up to 0.02h (a 20% overbill), and 60 one-minute
+// entries would bill 1.2h instead of 1h. Callers round money at the currency's
+// minor-unit scale and hours only for display, so the billed amount stays exact.
 
 // Anchored so a whole field must be a clean duration — "2h typo" must NOT parse
 // as 2h. Callers pass either a full inline-field value or a token already
@@ -18,7 +23,7 @@ export function parseTimeRange(token: string): number | null {
 	if (end < start) end += 24 * 60; // crosses midnight
 	const minutes = end - start;
 	if (minutes <= 0) return null;
-	return round2(minutes / 60);
+	return minutes / 60;
 }
 
 export function parseDuration(token: string): number | null {
@@ -31,7 +36,7 @@ export function parseDuration(token: string): number | null {
 	// Bare number means hours (e.g. "2" or "2.5").
 	if (/^\d+(?:\.\d+)?$/.test(trimmed)) {
 		const n = Number(trimmed);
-		return n > 0 ? round2(n) : null;
+		return n > 0 ? n : null;
 	}
 
 	const m = HM_RE.exec(trimmed);
@@ -42,5 +47,5 @@ export function parseDuration(token: string): number | null {
 	// "1h90m" is a typo). A minutes-only token like "90m" is still valid (1.5h).
 	if (m[1] !== undefined && mins >= 60) return null;
 	const total = hours + mins / 60;
-	return total > 0 ? round2(total) : null;
+	return total > 0 ? total : null;
 }

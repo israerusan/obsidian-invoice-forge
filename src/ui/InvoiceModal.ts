@@ -33,8 +33,35 @@ export class InvoiceModal extends Modal {
 	}
 
 	private async loadEntries(): Promise<void> {
-		this.entries = await this.plugin.scanner.scan(this.plugin.settings.clients);
+		try {
+			this.entries = await this.plugin.scanner.scan(this.plugin.settings.clients);
+		} catch (err) {
+			// A vault read failure (or a corrupt note) must not leave the modal stuck
+			// on its "Scanning…" placeholder — show the error and let the user retry.
+			this.renderScanError(err);
+			return;
+		}
 		this.render();
+	}
+
+	private renderScanError(err: unknown): void {
+		const { contentEl } = this;
+		contentEl.empty();
+		contentEl
+			.createDiv({ cls: "if-warn" })
+			.createEl("p", {
+				text: `Couldn't scan the vault for #billable entries: ${err instanceof Error ? err.message : String(err)}`,
+			});
+		new Setting(contentEl).addButton((b) =>
+			b
+				.setButtonText("Retry")
+				.setCta()
+				.onClick(() => {
+					contentEl.empty();
+					contentEl.createEl("p", { text: "Scanning vault for #billable entries…", cls: "if-muted" });
+					void this.loadEntries();
+				})
+		);
 	}
 
 	private clientOptions(): { key: string; label: string }[] {

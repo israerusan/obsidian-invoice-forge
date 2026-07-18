@@ -1,5 +1,5 @@
 import type { BusinessProfile, Client, Invoice, InvoiceLine, TimeEntry } from "../model/types";
-import { currencyFractionDigits, roundMoney } from "./money";
+import { currencyFractionDigits, round2, roundMoney } from "./money";
 
 export interface BuildOptions {
 	number: string;
@@ -65,8 +65,14 @@ export function summarizeEntries(
 		// Round the rate to the currency scale too, so the displayed rate × hours
 		// equals the displayed amount (a 3-decimal rate would otherwise disagree).
 		const rate = roundMoney(finite(e.rate ?? safeBase, safeBase), digits);
-		const amount = roundMoney(e.hours * rate, digits);
-		return { date: e.date, description: e.description || "Work", hours: e.hours, rate, amount };
+		// The AMOUNT is computed from full-precision hours (so minute-level entries
+		// bill exactly), while the displayed hours are rounded to 2 decimals for a
+		// clean line item. For fractional-minute entries the printed hours × rate
+		// may therefore differ by a rounding step from the printed amount — the
+		// amount is the correct, exact charge.
+		const hours = finite(e.hours, 0);
+		const amount = roundMoney(hours * rate, digits);
+		return { date: e.date, description: e.description || "Work", hours: round2(hours), rate, amount };
 	});
 	const subtotal = roundMoney(lines.reduce((sum, l) => sum + l.amount, 0), digits);
 	const taxAmount = roundMoney((subtotal * safeTaxRate) / 100, digits);

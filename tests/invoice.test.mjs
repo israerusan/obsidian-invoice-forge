@@ -87,6 +87,9 @@ assert.equal(freeInv.total, 380);
 const d = new Date("2026-06-26T00:00:00");
 assert.equal(formatInvoiceNumber("INV-{YYYY}-{seq:4}", 7, d), "INV-2026-0007");
 assert.equal(formatInvoiceNumber("{YY}{MM}{DD}-{seq}", 12, d), "260626-12");
+// {seq:N} padding is capped so a mistyped huge N can't allocate a giant string.
+assert.equal(formatInvoiceNumber("{seq:100}", 7, d), "000000000007", "padding capped at 12 digits");
+assert.equal(formatInvoiceNumber("{seq:100}", 7, d).length, 12);
 
 // addDays
 assert.equal(addDays("2026-06-30", 14), "2026-07-14");
@@ -156,6 +159,22 @@ const precise = summarizeEntries(
 assert.equal(precise.lines[0].rate, 40.26, "rate rounded to 2 decimals");
 assert.equal(precise.lines[0].amount, 80.52, "amount computed from the rounded rate (40.26*2)");
 
+// --- Minute-level entries bill the EXACT amount (no pre-rounded-hours overbill).
+// 1h1m = 61/60h; at $300/h that is exactly $305, not $306 (round2(1.0166)h * 300). ---
+const minuteEntries = [
+	{ clientId: null, clientName: "M", date: "2026-06-01", hours: 1 + 1 / 60, rate: null, description: "a", sourcePath: "p", line: 0 },
+];
+const minute = summarizeEntries(minuteEntries, 300, 0, "USD");
+assert.equal(minute.lines[0].amount, 305, "1h1m at $300/h bills exactly $305, not $306");
+assert.equal(minute.lines[0].hours, 1.02, "hours are shown rounded to 2 decimals for display");
+assert.equal(minute.subtotal, 305);
+// 60 one-minute entries = exactly 1 hour = $300, not 60 * round2(1/60) * 300 = $360.
+const tinyEntries = Array.from({ length: 60 }, (_, i) => ({
+	clientId: null, clientName: "T", date: "2026-06-01", hours: 1 / 60, rate: null, description: `e${i}`, sourcePath: "p", line: i,
+}));
+const tiny = summarizeEntries(tinyEntries, 300, 0, "USD");
+assert.equal(tiny.subtotal, 300, "sixty 1-minute entries bill exactly one hour, not 1.2h");
+
 // --- Frontmatter escaping: a client name with backslashes/quotes must not
 // corrupt the YAML block (which would silently break Dataview status + reminders). ---
 const nasty = buildInvoice(
@@ -182,5 +201,21 @@ for (const key of ["invoice", "client", "currency"]) {
 // (escaped backslash + a live column separator).
 const row = md.split("\n").find((l) => l.startsWith("| 2026-06-01 |"));
 assert.ok(row.includes("a\\\\\\|b"), "backslash escaped before pipe in line-item cell");
+
+// --- Markdown injection: a client name with a newline + wiki-embed must not add
+// Markdown lines or transclude vault content into the generated invoice note. ---
+const inj = buildInvoice(
+	[{ clientId: null, clientName: "X", date: "2026-06-01", hours: 1, rate: null, description: "desc ![[secret-note]]", sourcePath: "p", line: 0 }],
+	{ id: "x", name: "Acme\n# Injected Heading\n![[Private]]", email: "", address: "", defaultRate: 50, currency: "USD", taxRate: 0 },
+	business,
+	{ number: "INV-INJ", issueDate: "2026-06-01", periodStart: "2026-06-01", periodEnd: "2026-06-30", dueInDays: 14, isPro: false }
+);
+const injMd = renderInvoiceMarkdown(inj, business);
+const billTo = injMd.split("\n").find((l) => l.startsWith("**Bill to:**"));
+assert.ok(billTo, "invoice has a Bill to line");
+assert.ok(!billTo.includes("\n"), "the client name's newlines are collapsed onto one line");
+assert.ok(!/(^|[^\\])!\[\[/.test(billTo), "wiki-embed in the client name is defused (no live ![[ )");
+const descRow = injMd.split("\n").find((l) => l.includes("desc "));
+assert.ok(descRow && !/(^|[^\\])!\[\[/.test(descRow), "wiki-embed in a description is defused in the table cell");
 
 console.log("invoice tests passed");

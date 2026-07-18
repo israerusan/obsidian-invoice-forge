@@ -46,4 +46,14 @@ const bad = new Uint8Array(payloadBytes);
 bad[0] ^= 0xff;
 assert.ok(!nacl.sign.detached.verify(bad, signature, publicKey), "tampered payload must not verify");
 
+// --- End-to-end: a REAL generated key must verify through LicenseManager. This
+// guards the payload-shape validation from ever rejecting a paying customer. ---
+const { LicenseManager } = await import("./.testable.mjs");
+const result = LicenseManager.verify(licenseKey);
+assert.ok(result.valid, "a freshly generated key verifies through LicenseManager");
+assert.equal(result.email, "test@example.com", "verify returns the licensed email");
+// Garbage and a wrong-shape (product-only) input are rejected, not accepted blank.
+assert.ok(!LicenseManager.verify("not-a-key").valid, "malformed key rejected");
+assert.ok(!LicenseManager.verify("").valid, "empty key rejected");
+
 console.log("license tests passed");

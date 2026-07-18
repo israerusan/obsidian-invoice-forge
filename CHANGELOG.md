@@ -3,6 +3,50 @@
 All notable changes to Invoice Forge are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [1.2.1] - 2026-07-18
+
+Second hardening pass from a multi-agent adversarial review. Happy-path billing is
+unchanged; these fix correctness and robustness edge cases and tighten data safety.
+
+### Fixed
+- **Exact time billing.** Durations are no longer pre-rounded to 1/100 h before the
+  money math. Previously a bare `1m` rounded up to 0.02 h (a 20% overbill) and
+  `1h1m` billed as 1.02 h; entries now bill the exact worked time (money is still
+  rounded to each currency's scale, hours shown to two decimals).
+- **Crash recovery can't double-bill.** Recovery now validates every journaled
+  source line *before* writing anything. If a line drifted while unmarked, it
+  writes nothing and asks you to reconcile — instead of creating the invoice, then
+  leaving that work unmarked and re-billable on the next scan. Recovery also writes
+  one edit per note rather than one per entry.
+- **Targeted rollback.** Undoing a failed invoice now removes markers only from the
+  exact lines it billed, so a reused/duplicate invoice number can't strip markers
+  from unrelated, already-billed work elsewhere in a note.
+- **Client-tag matching.** Client slugs are generated Unicode-aware, so a client
+  named "Café" (`#client/café`) is no longer saved as `caf` and silently unmatched.
+  Nested `#client/<slug>/<sub>` tags resolve to the first segment and no longer
+  leak `/sub` into the invoice description.
+- **Stricter input.** An explicit but unparseable `[time::]`/`[hours::]` field is
+  surfaced as a skipped line instead of silently borrowing a number from the
+  description prose. Note dates from frontmatter/filenames must be real calendar
+  dates (an impossible `2026-02-30` falls through instead of mis-periodising work).
+- **License validation.** A signed license is accepted only when its payload is a
+  well-formed object with a non-empty email and issue date (existing keys are
+  unaffected).
+- **Reminders.** The invoice-folder and `status` matches are case-insensitive
+  (so "Invoices"/"invoices" and "Paid"/"paid" behave), an unquoted frontmatter
+  `due:` date (a `Date` object) is handled, and only real ISO dates are compared.
+- **Windows-safe files & templates.** Line endings are preserved when marking
+  billed lines (CRLF notes stay CRLF), reserved filenames (`CON`, `NUL`, …) and
+  trailing dots/spaces are handled, and `{seq:N}` padding is capped so a mistyped
+  template can't freeze rendering.
+- **Data safety.** More persisted settings (license key, folder, template,
+  toggles) are type-coerced on load, so a corrupt or hand-edited `data.json` can't
+  crash startup. The invoice modal shows a retryable error instead of a stuck
+  "Scanning…" spinner if a vault read fails.
+- **Invoice rendering.** Single-line fields (names, emails, tax label, number) have
+  their newlines collapsed and wiki-embeds defused, so a pasted value can't
+  restructure the invoice note or transclude unrelated vault content.
+
 ## [1.2.0] - 2026-07-06
 
 Hardening release from a multi-round adversarial code review. No changes to the

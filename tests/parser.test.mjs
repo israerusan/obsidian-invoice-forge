@@ -3,9 +3,11 @@ import {
 	markLineBilled,
 	unmarkLineBilled,
 	lineMatchesEntry,
+	lineHasInvoiceMarker,
 	parseBillableLine,
 	contentLines,
 	frontmatterDate,
+	slugify,
 } from "./.testable.mjs";
 
 const ctx = { defaultDate: "2026-06-01", clientNames: { acme: "Acme Corp" } };
@@ -131,6 +133,37 @@ assert.ok(uni);
 assert.equal(uni.clientId, "café", "accented slug captured in full");
 assert.equal(uni.description, "Fixed login", "no orphaned accent leaks into description");
 
+// --- slugify is Unicode-aware, so it matches the tag the parser accepts ---
+assert.equal(slugify("Café"), "café", "accented client name keeps its letters (matches #client/café)");
+assert.equal(slugify("Acme Inc"), "acme-inc", "spaces become hyphens");
+assert.equal(slugify("  "), "client", "empty slug falls back to 'client'");
+assert.equal(slugify("münchen"), "münchen", "non-ASCII letters preserved");
+
+// --- A nested #client/<slug>/<sub> tag: the first segment is the id and the whole
+// tag (including the sub-tag) is consumed, so nothing leaks into the description ---
+const nestedClient = parseBillableLine("- #billable #client/acme/project-a 2h Shipped feature", ctx);
+assert.ok(nestedClient);
+assert.equal(nestedClient.clientId, "acme", "first segment is the client id");
+assert.equal(nestedClient.clientName, "Acme Corp", "id resolves to configured name");
+assert.equal(nestedClient.description, "Shipped feature", "nested sub-tag does not leak into description");
+
+// --- An explicit but unparseable [time::] field surfaces the line (returns null),
+// rather than silently grabbing a loose duration from the description prose ---
+assert.equal(
+	parseBillableLine("- #billable #client/acme [time:: tow] fixed the 3h timeout bug", ctx),
+	null,
+	"a typo'd explicit time is surfaced, not backfilled from a prose '3h'"
+);
+// A valid explicit time still wins over loose prose numbers.
+const goodField = parseBillableLine("- #billable #client/acme [time:: 2h] reviewed 3 PRs over 5h window", ctx);
+assert.ok(goodField && goodField.hours === 2, "a valid explicit time is authoritative");
+
+// --- lineHasInvoiceMarker detects THIS invoice's marker only ---
+const markedLine = markLineBilled("- #billable #client/acme 1h Fix", "INV-2026-0001");
+assert.ok(lineHasInvoiceMarker(markedLine, "INV-2026-0001"), "detects its own marker");
+assert.ok(!lineHasInvoiceMarker(markedLine, "INV-2026-9999"), "does not match a different number");
+assert.ok(!lineHasInvoiceMarker("- #billable #client/acme 1h Fix", "INV-2026-0001"), "no marker → false");
+
 // --- Two clock ranges on a line are ambiguous → surfaced (null) ---
 assert.equal(
 	parseBillableLine("- #billable #client/acme 09:00-10:00 and 13:00-14:00 work", ctx),
@@ -193,6 +226,10 @@ assert.deepEqual(texts(lenFence), ["- #billable 1h out"]);
 assert.equal(frontmatterDate("---\ndate: 2026-01-10\n---\n- #billable 2h"), "2026-01-10");
 assert.equal(frontmatterDate('---\ndate: "2026-01-10"\ntags: [x]\n---\nbody'), "2026-01-10", "quoted date value");
 assert.equal(frontmatterDate("no frontmatter here"), null);
+// An impossible calendar date in frontmatter is rejected (falls through to other
+// date sources) rather than mis-periodising every entry in the note.
+assert.equal(frontmatterDate("---\ndate: 2026-02-30\n---\nbody"), null, "Feb 30 rejected");
+assert.equal(frontmatterDate("---\ndate: 2026-99-99\n---\nbody"), null, "impossible month/day rejected");
 assert.equal(frontmatterDate("---\ntitle: X\n---\nbody"), null, "no date key -> null");
 assert.equal(frontmatterDate("---\nnote: date is 2026-01-10 somewhere\n---"), null, "date only read from a date: key");
 // A nested/indented date: under another key is NOT the document date.

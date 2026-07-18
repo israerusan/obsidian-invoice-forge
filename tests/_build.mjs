@@ -15,4 +15,10 @@ await esbuild.build({
 	target: "es2020",
 	outfile: path.join(__dirname, ".testable.mjs"),
 	logLevel: "error",
+	// tweetnacl (pulled in by LicenseManager) does a dynamic `require("crypto")`;
+	// in an ESM+node bundle esbuild otherwise stubs that with a throw. Re-establish
+	// a working `require` so the bundle can load under `node`.
+	banner: {
+		js: "import { createRequire as __cr } from 'module';\nconst require = __cr(import.meta.url);",
+	},
 });
