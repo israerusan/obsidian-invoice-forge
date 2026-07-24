@@ -41,7 +41,12 @@ const ANY_TAG_G = /(^|\s)#(?=[\p{L}\p{N}_/-]*[\p{L}_-])[\p{L}\p{N}_/-]+/gu;
 
 // Parse a single markdown line into a billable entry, or null if it isn't one.
 export function parseBillableLine(rawLine: string, ctx: ParseContext): ParsedEntry | null {
-	const line = rawLine.replace(/^[\s>*+-]*(?:\[[ xX/-]\]\s*)?/, ""); // strip list/checkbox markers
+	// Strip leading list/quote/checkbox markers. The `\d+[.)]` clause removes an
+	// ORDERED-list prefix ("1. ", "2) ") — a very common way to log work — so the
+	// numeral doesn't leak into the invoice description ("1. Draft contract"). It
+	// only matches at the very start (after any bullet/quote run) and requires a
+	// following space, so a bare "3h"/"3." mid-content is never eaten.
+	const line = rawLine.replace(/^[\s>*+-]*(?:\d+[.)]\s+)?(?:\[[ xX/-]\]\s*)?/, "");
 	if (!BILLABLE_RE.test(rawLine)) return null;
 
 	let working = line;

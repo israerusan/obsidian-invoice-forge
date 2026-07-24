@@ -3,6 +3,38 @@
 All notable changes to Invoice Forge are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [1.3.0] - 2026-07-24
+
+Closes the billing loop: you can now settle invoices from inside the plugin, and
+work logged in numbered lists bills cleanly. Prompted by a multi-model design
+review focused on the freelancer's real workflow.
+
+### Added
+- **Mark invoice as paid.** A new command settles an invoice — the open invoice
+  note, or one picked from a list of unpaid invoices — stamping `status: paid` and
+  a `paidDate` in its frontmatter. Previously the only way to stop the due-date
+  reminders was to hand-edit YAML; now it's one command.
+- **Mark invoice as unpaid (reopen).** Reopens a settled invoice (e.g. a payment
+  fell through) so its reminders resume.
+- **Show outstanding invoices.** An on-demand receivables snapshot: how many
+  invoices are unpaid, how many are overdue or due soon, and the total owed per
+  currency. Free — it complements the Pro background reminders.
+
+### Fixed
+- **Numbered-list work is billed cleanly.** A `#billable` line in an ordered list
+  (`1. #billable … Draft contract`) previously kept its `1.`/`2)` prefix in the
+  invoice description; the list marker is now stripped like bullets and checkboxes
+  already were.
+- **Crash-recovery ordering.** Interrupted-invoice recovery now marks the source
+  lines *before* re-creating the invoice note (matching normal creation). A failure
+  mid-recovery can no longer leave an invoice note beside still-unmarked source
+  lines, which a later Create could otherwise have billed a second time.
+
+### Internal
+- Invoice-note reading and due-date classification are unified in one tested module
+  (`invoice/invoiceNotes.ts`), shared by reminders, "mark paid", and the outstanding
+  summary, with dedicated unit tests.
+
 ## [1.2.1] - 2026-07-18
 
 Second hardening pass from a multi-agent adversarial review. Happy-path billing is

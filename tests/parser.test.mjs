@@ -43,6 +43,28 @@ assert.equal(c.hours, 1.5);
 assert.equal(c.date, "2026-06-10");
 assert.equal(c.description, "Reviewed PRs");
 
+// Ordered-list items are billed and the "1."/"2)" prefix does NOT leak into the
+// description (a very common way to log work in numbered lists).
+const ol1 = parseBillableLine("1. #billable #client/acme 1h Draft contract", ctx);
+assert.ok(ol1);
+assert.equal(ol1.hours, 1);
+assert.equal(ol1.description, "Draft contract", "ordered-list '1.' prefix stripped from description");
+const ol2 = parseBillableLine("2) #billable #client/acme 30m Review", ctx);
+assert.ok(ol2);
+assert.equal(ol2.description, "Review", "ordered-list '2)' prefix stripped");
+const ol3 = parseBillableLine("   10. #billable #client/acme [time:: 2h] Ship it", ctx);
+assert.ok(ol3);
+assert.equal(ol3.hours, 2);
+assert.equal(ol3.description, "Ship it", "indented multi-digit ordered prefix stripped");
+// An ordered item that also has a checkbox: both markers stripped.
+const ol4 = parseBillableLine("1. [ ] #billable #client/acme 1h Task", ctx);
+assert.ok(ol4);
+assert.equal(ol4.description, "Task", "ordered prefix + checkbox both stripped");
+// A leading number that is NOT a list marker (no following space) stays in the text.
+const notOl = parseBillableLine("- #billable #client/acme 2h v1.2 release notes", ctx);
+assert.ok(notOl);
+assert.equal(notOl.description, "v1.2 release notes", "a version like v1.2 is not treated as a list prefix");
+
 // Billable but no parseable duration → null.
 assert.equal(parseBillableLine("- #billable #client/acme just talked", ctx), null);
 

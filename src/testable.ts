@@ -6,5 +6,6 @@ export { contentLines, frontmatterDate } from "./time/markdownRegions";
 export { buildInvoice, filterEntries, summarizeEntries, resolveRates, addDays, toISODate, isValidISODate } from "./invoice/InvoiceBuilder";
 export { formatInvoiceNumber } from "./invoice/numbering";
 export { formatMoney, round2 } from "./invoice/money";
+export { readInvoiceMeta, normalizeDate, isPaidStatus, classifyDue, summarizeOutstanding } from "./invoice/invoiceNotes";
 export { renderInvoiceMarkdown } from "./invoice/InvoiceRenderer";
 export { LicenseManager } from "./license/LicenseManager";

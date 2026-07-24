@@ -5,11 +5,13 @@ import { InvoiceModal } from "./ui/InvoiceModal";
 import { LicenseManager } from "./license/LicenseManager";
 import { VaultScanner, detectNewline } from "./time/VaultScanner";
 import { lineHasInvoiceMarker, lineMatchesEntry, markLineBilled } from "./time/entryParser";
-import { buildInvoice, filterEntries, toISODate, type BuildOptions } from "./invoice/InvoiceBuilder";
-import { round2 } from "./invoice/money";
+import { buildInvoice, filterEntries, toISODate, addDays, type BuildOptions } from "./invoice/InvoiceBuilder";
+import { formatMoney, round2 } from "./invoice/money";
 import { renderInvoiceMarkdown, renderInvoiceHtml } from "./invoice/InvoiceRenderer";
 import { formatInvoiceNumber } from "./invoice/numbering";
+import { readInvoiceMeta, summarizeOutstanding, type InvoiceMeta } from "./invoice/invoiceNotes";
 import { ReminderManager } from "./reminders/ReminderManager";
+import { InvoicePickerModal } from "./ui/InvoicePickerModal";
 import type { BusinessProfile, Client, Invoice } from "./model/types";
 
 export default class InvoiceForgePlugin extends Plugin {
@@ -43,6 +45,24 @@ export default class InvoiceForgePlugin extends Plugin {
 			id: "preview-billable-hours",
 			name: "Preview unbilled hours by client",
 			callback: () => void this.previewHours(),
+		});
+
+		this.addCommand({
+			id: "mark-invoice-paid",
+			name: "Mark invoice as paid",
+			callback: () => void this.markInvoicePaidFlow(),
+		});
+
+		this.addCommand({
+			id: "mark-invoice-unpaid",
+			name: "Mark invoice as unpaid (reopen)",
+			callback: () => void this.reopenActiveInvoice(),
+		});
+
+		this.addCommand({
+			id: "show-outstanding-invoices",
+			name: "Show outstanding invoices",
+			callback: () => this.showOutstandingInvoices(),
 		});
 
 		this.addSettingTab(new InvoiceForgeSettingTab(this.app, this));
@@ -114,6 +134,105 @@ export default class InvoiceForgePlugin extends Plugin {
 		const skipped = this.scanner.lastUnparsed.length;
 		const warn = skipped > 0 ? `\n⚠ ${skipped} #billable line(s) skipped (fix their time).` : "";
 		new Notice(`Unbilled hours:\n${summary}${warn}`, 8000);
+	}
+
+	// Read every invoice note in the invoice folder as a normalized record. Shared
+	// by reminders, the "mark paid" picker, and the outstanding-invoices summary so
+	// they all agree on which notes are invoices and how their frontmatter is read.
+	collectInvoiceNotes(): { file: TFile; meta: InvoiceMeta }[] {
+		// Match the SAME normalized/sanitized folder as invoice creation, compared
+		// case-insensitively (the folder on disk can differ in case from the setting).
+		const prefix = (this.invoiceFolderPath() + "/").toLowerCase();
+		const out: { file: TFile; meta: InvoiceMeta }[] = [];
+		for (const file of this.app.vault.getMarkdownFiles()) {
+			if (!file.path.toLowerCase().startsWith(prefix)) continue;
+			const meta = readInvoiceMeta(this.app.metadataCache.getFileCache(file)?.frontmatter);
+			if (meta) out.push({ file, meta });
+		}
+		return out;
+	}
+
+	// Set an invoice note's payment status via processFrontMatter (which preserves
+	// the rest of the note and its formatting). Marking paid stamps a paidDate;
+	// reopening clears it. Returns the invoice number for user feedback.
+	private async setInvoiceStatus(file: TFile, paid: boolean): Promise<string> {
+		let number = "";
+		await this.app.fileManager.processFrontMatter(file, (fm: Record<string, unknown>) => {
+			const raw = fm.invoice;
+			number = typeof raw === "string" ? raw : typeof raw === "number" ? String(raw) : "";
+			fm.status = paid ? "paid" : "unpaid";
+			if (paid) fm.paidDate = toISODate(new Date());
+			else delete fm.paidDate;
+		});
+		return number;
+	}
+
+	// "Mark invoice as paid": if the active note is an unpaid invoice, mark it
+	// directly; otherwise open a picker of unpaid invoices. This closes the loop the
+	// reminders open — before this, the only way to stop the nag was hand-editing YAML.
+	async markInvoicePaidFlow(): Promise<void> {
+		const active = this.app.workspace.getActiveFile();
+		if (active) {
+			const meta = readInvoiceMeta(this.app.metadataCache.getFileCache(active)?.frontmatter);
+			if (meta) {
+				if (meta.status === "paid") {
+					new Notice(`${meta.number || active.basename} is already marked paid.`);
+					return;
+				}
+				const number = await this.setInvoiceStatus(active, true);
+				new Notice(`Marked ${number || active.basename} paid.`);
+				return;
+			}
+		}
+
+		const unpaid = this.collectInvoiceNotes().filter((r) => r.meta.status !== "paid");
+		if (unpaid.length === 0) {
+			new Notice("No unpaid invoices to mark. Open an invoice note to mark it paid, or create one first.");
+			return;
+		}
+		new InvoicePickerModal(this.app, this, unpaid, async (choice) => {
+			const number = await this.setInvoiceStatus(choice.file, true);
+			new Notice(`Marked ${number || choice.file.basename} paid.`);
+		}).open();
+	}
+
+	// "Mark invoice as unpaid (reopen)": reopens the invoice note in the active tab
+	// so its reminders resume (e.g. a payment fell through). Active-file-only to keep
+	// an accidental un-settling of the wrong invoice out of a fuzzy picker.
+	async reopenActiveInvoice(): Promise<void> {
+		const active = this.app.workspace.getActiveFile();
+		const meta = active ? readInvoiceMeta(this.app.metadataCache.getFileCache(active)?.frontmatter) : null;
+		if (!active || !meta) {
+			new Notice("Open an invoice note first, then run this command to reopen it.");
+			return;
+		}
+		if (meta.status !== "paid") {
+			new Notice(`${meta.number || active.basename} is already unpaid.`);
+			return;
+		}
+		const number = await this.setInvoiceStatus(active, false);
+		new Notice(`Reopened ${number || active.basename} (marked unpaid).`);
+	}
+
+	// "Show outstanding invoices": an on-demand receivables snapshot — how many are
+	// unpaid, how many overdue / due soon, and the total owed per currency. Free
+	// (reading frontmatter), complementing the Pro background reminders.
+	showOutstandingInvoices(): void {
+		const metas = this.collectInvoiceNotes().map((r) => r.meta);
+		const today = toISODate(new Date());
+		const soon = addDays(today, this.settings.reminderDaysBefore);
+		const s = summarizeOutstanding(metas, today, soon);
+		if (s.unpaidCount === 0) {
+			new Notice(metas.length === 0 ? "No invoices found in the invoice folder yet." : "No outstanding invoices — all paid. 🎉");
+			return;
+		}
+		const parts: string[] = [`Outstanding: ${s.unpaidCount} invoice(s)`];
+		if (s.overdue.length > 0) parts.push(`⚠ ${s.overdue.length} overdue`);
+		if (s.dueSoon.length > 0) parts.push(`${s.dueSoon.length} due soon`);
+		if (s.byCurrency.length > 0) {
+			parts.push("Owed: " + s.byCurrency.map((c) => formatMoney(c.total, c.currency)).join(" · "));
+		}
+		new Notice(parts.join("\n"), 10000);
 	}
 
 	// Core: scan → build → mark source entries → write invoice note. The order and
@@ -263,15 +382,12 @@ export default class InvoiceForgePlugin extends Plugin {
 				}
 			}
 
-			// Phase 2 — safe to apply. Create the note if it's missing…
-			const existing = this.app.vault.getAbstractFileByPath(pending.path);
-			if (!(existing instanceof TFile)) {
-				const slash = pending.path.lastIndexOf("/");
-				if (slash > 0) await this.ensureFolder(pending.path.slice(0, slash));
-				await this.app.vault.create(pending.path, pending.markdown);
-			}
-			// …then mark any still-unmarked source lines, one write per note (not one
-			// per entry), preserving each note's newline convention.
+			// Phase 2 — safe to apply. Mark the source lines FIRST, then create the
+			// note, mirroring createInvoice's invariant: a mid-recovery failure must
+			// fall toward "note missing" (retried on next load — the markdown is still
+			// journaled), never "note exists beside still-unmarked lines" (which a new
+			// Create could then bill a SECOND time). Marking runs one write per note
+			// (not one per entry) and preserves each note's newline convention.
 			for (const [path, fileEntries] of byPath) {
 				const file = this.app.vault.getAbstractFileByPath(path);
 				if (!(file instanceof TFile)) continue;
@@ -285,6 +401,14 @@ export default class InvoiceForgePlugin extends Plugin {
 					}
 					return lines.join(newline);
 				});
+			}
+			// …then create the invoice note if it's missing. (An already-marked line is
+			// skipped above, so this stays idempotent across repeated recovery passes.)
+			const existing = this.app.vault.getAbstractFileByPath(pending.path);
+			if (!(existing instanceof TFile)) {
+				const slash = pending.path.lastIndexOf("/");
+				if (slash > 0) await this.ensureFolder(pending.path.slice(0, slash));
+				await this.app.vault.create(pending.path, pending.markdown);
 			}
 			new Notice(`Recovered an interrupted invoice: ${pending.number}.`);
 			// Clear the journal ONLY if it's still the record we just replayed — never

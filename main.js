@@ -2270,7 +2270,7 @@ __export(main_exports, {
   default: () => InvoiceForgePlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian6 = require("obsidian");
+var import_obsidian7 = require("obsidian");
 
 // src/settings.ts
 var PRO_PRICE = "$15 one-time";
@@ -3045,7 +3045,7 @@ var DATE_RE = /\b(\d{4}-\d{2}-\d{2})\b/;
 var ANY_TAG_G = /(^|\s)#(?=[\p{L}\p{N}_/-]*[\p{L}_-])[\p{L}\p{N}_/-]+/gu;
 function parseBillableLine(rawLine, ctx) {
   var _a, _b, _c;
-  const line = rawLine.replace(/^[\s>*+-]*(?:\[[ xX/-]\]\s*)?/, "");
+  const line = rawLine.replace(/^[\s>*+-]*(?:\d+[.)]\s+)?(?:\[[ xX/-]\]\s*)?/, "");
   if (!BILLABLE_RE.test(rawLine)) return null;
   let working = line;
   const fields = {};
@@ -3507,6 +3507,57 @@ function formatInvoiceNumber(template, seq, date) {
   return template.replace(/\{YYYY\}/g, yyyy).replace(/\{YY\}/g, yyyy.slice(-2)).replace(/\{MM\}/g, mm).replace(/\{DD\}/g, dd).replace(/\{seq:(\d+)\}/g, (_, n) => String(seq).padStart(Math.min(Number(n), MAX_SEQ_PAD), "0")).replace(/\{seq\}/g, String(seq));
 }
 
+// src/invoice/invoiceNotes.ts
+function fmString(value) {
+  if (typeof value === "string") return value;
+  if (typeof value === "number") return String(value);
+  return "";
+}
+function normalizeDate(value) {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return isValidISODate(trimmed) ? trimmed : "";
+  }
+  if (value instanceof Date && !Number.isNaN(value.getTime())) return toISODate(value);
+  return "";
+}
+function readInvoiceMeta(fm) {
+  if (!fm || fm.invoice === void 0) return null;
+  const total = typeof fm.total === "number" && Number.isFinite(fm.total) ? fm.total : null;
+  return {
+    number: fmString(fm.invoice),
+    client: fmString(fm.client),
+    status: typeof fm.status === "string" && fm.status.trim() ? fm.status.trim().toLowerCase() : "unpaid",
+    due: normalizeDate(fm.due),
+    issued: normalizeDate(fm.issued),
+    total,
+    currency: typeof fm.currency === "string" && fm.currency.trim() ? fm.currency.trim().toUpperCase() : "USD"
+  };
+}
+function classifyDue(dueISO, todayISO, soonISO) {
+  if (!isValidISODate(dueISO)) return "none";
+  if (dueISO < todayISO) return "overdue";
+  if (dueISO <= soonISO) return "due-soon";
+  return "later";
+}
+function summarizeOutstanding(metas, todayISO, soonISO) {
+  var _a;
+  const unpaid = metas.filter((m) => m.status !== "paid");
+  const overdue = [];
+  const dueSoon = [];
+  const totals = /* @__PURE__ */ new Map();
+  for (const m of unpaid) {
+    const bucket = classifyDue(m.due, todayISO, soonISO);
+    if (bucket === "overdue") overdue.push(m);
+    else if (bucket === "due-soon") dueSoon.push(m);
+    if (m.total !== null) totals.set(m.currency, ((_a = totals.get(m.currency)) != null ? _a : 0) + m.total);
+  }
+  overdue.sort((a, b) => a.due < b.due ? -1 : a.due > b.due ? 1 : 0);
+  dueSoon.sort((a, b) => a.due < b.due ? -1 : a.due > b.due ? 1 : 0);
+  const byCurrency = [...totals.entries()].map(([currency, total]) => ({ currency, total })).sort((a, b) => b.total - a.total);
+  return { unpaidCount: unpaid.length, overdue, dueSoon, byCurrency };
+}
+
 // src/reminders/ReminderManager.ts
 var import_obsidian5 = require("obsidian");
 var ReminderManager = class {
@@ -3528,26 +3579,18 @@ var ReminderManager = class {
     }
   }
   async check() {
-    var _a;
     if (!this.plugin.settings.isPro || !this.plugin.settings.reminderEnabled) return;
     const today = toISODate(/* @__PURE__ */ new Date());
     const soon = toISODate(addDays2(/* @__PURE__ */ new Date(), this.plugin.settings.reminderDaysBefore));
-    const prefix = (this.plugin.invoiceFolderPath() + "/").toLowerCase();
-    const files = this.plugin.app.vault.getMarkdownFiles().filter((f) => f.path.toLowerCase().startsWith(prefix));
     const due = [];
     const overdue = [];
-    for (const file of files) {
-      const fm = (_a = this.plugin.app.metadataCache.getFileCache(file)) == null ? void 0 : _a.frontmatter;
-      if (!fm || fm.invoice === void 0) continue;
-      const status = typeof fm.status === "string" ? fm.status.trim().toLowerCase() : "unpaid";
-      if (status === "paid") continue;
-      const dueDate = normalizeDue(fm.due);
-      if (!isValidISODate(dueDate)) continue;
-      const invoiceLabel = fmString(fm.invoice);
-      const clientLabel = fmString(fm.client) || "?";
-      const label = `${invoiceLabel} (${clientLabel}) due ${dueDate}`;
-      if (dueDate < today) overdue.push(label);
-      else if (dueDate <= soon) due.push(label);
+    for (const { meta } of this.plugin.collectInvoiceNotes()) {
+      if (meta.status === "paid") continue;
+      const bucket = classifyDue(meta.due, today, soon);
+      if (bucket === "none") continue;
+      const label = `${meta.number} (${meta.client || "?"}) due ${meta.due}`;
+      if (bucket === "overdue") overdue.push(label);
+      else if (bucket === "due-soon") due.push(label);
     }
     if (overdue.length > 0) {
       new import_obsidian5.Notice(`\u26A0 ${overdue.length} overdue invoice(s):
@@ -3559,24 +3602,43 @@ ${due.join("\n")}`, 8e3);
     }
   }
 };
-function fmString(value) {
-  if (typeof value === "string") return value;
-  if (typeof value === "number") return String(value);
-  return "";
-}
-function normalizeDue(value) {
-  if (typeof value === "string") return value.trim();
-  if (value instanceof Date && !Number.isNaN(value.getTime())) return toISODate(value);
-  return "";
-}
 function addDays2(d, days) {
   const copy = new Date(d);
   copy.setDate(copy.getDate() + days);
   return copy;
 }
 
+// src/ui/InvoicePickerModal.ts
+var import_obsidian6 = require("obsidian");
+var InvoicePickerModal = class extends import_obsidian6.FuzzySuggestModal {
+  constructor(app, _plugin, choices, onPick) {
+    super(app);
+    this.choices = choices;
+    this.onPick = onPick;
+    this.setPlaceholder("Pick an invoice to mark paid\u2026");
+  }
+  getItems() {
+    return [...this.choices].sort((a, b) => {
+      const da = a.meta.due || "9999-12-31";
+      const db = b.meta.due || "9999-12-31";
+      return da < db ? -1 : da > db ? 1 : 0;
+    });
+  }
+  getItemText(choice) {
+    const { meta } = choice;
+    const bits = [meta.number || choice.file.basename];
+    if (meta.client) bits.push(meta.client);
+    if (meta.total !== null) bits.push(formatMoney(meta.total, meta.currency));
+    if (meta.due) bits.push(`due ${meta.due}`);
+    return bits.join(" \xB7 ");
+  }
+  onChooseItem(choice) {
+    void this.onPick(choice);
+  }
+};
+
 // src/main.ts
-var InvoiceForgePlugin = class extends import_obsidian6.Plugin {
+var InvoiceForgePlugin = class extends import_obsidian7.Plugin {
   constructor() {
     super(...arguments);
     this.settings = DEFAULT_SETTINGS;
@@ -3602,6 +3664,21 @@ var InvoiceForgePlugin = class extends import_obsidian6.Plugin {
       id: "preview-billable-hours",
       name: "Preview unbilled hours by client",
       callback: () => void this.previewHours()
+    });
+    this.addCommand({
+      id: "mark-invoice-paid",
+      name: "Mark invoice as paid",
+      callback: () => void this.markInvoicePaidFlow()
+    });
+    this.addCommand({
+      id: "mark-invoice-unpaid",
+      name: "Mark invoice as unpaid (reopen)",
+      callback: () => void this.reopenActiveInvoice()
+    });
+    this.addCommand({
+      id: "show-outstanding-invoices",
+      name: "Show outstanding invoices",
+      callback: () => this.showOutstandingInvoices()
     });
     this.addSettingTab(new InvoiceForgeSettingTab(this.app, this));
     this.app.workspace.onLayoutReady(() => {
@@ -3634,13 +3711,13 @@ var InvoiceForgePlugin = class extends import_obsidian6.Plugin {
     const editor = (_a = this.app.workspace.activeEditor) == null ? void 0 : _a.editor;
     if (editor) {
       editor.replaceSelection(line);
-      new import_obsidian6.Notice("Inserted an example #billable line \u2014 edit it, then run Create invoice.");
+      new import_obsidian7.Notice("Inserted an example #billable line \u2014 edit it, then run Create invoice.");
       return;
     }
-    const path = (0, import_obsidian6.normalizePath)("Billable log.md");
+    const path = (0, import_obsidian7.normalizePath)("Billable log.md");
     const existing = this.app.vault.getAbstractFileByPath(path);
     let file;
-    if (existing instanceof import_obsidian6.TFile) {
+    if (existing instanceof import_obsidian7.TFile) {
       file = existing;
       await this.app.vault.process(file, (content) => `${content.replace(/\s*$/, "")}
 ${line}`);
@@ -3650,7 +3727,7 @@ ${line}`);
 ${line}`);
     }
     await this.app.workspace.getLeaf(true).openFile(file);
-    new import_obsidian6.Notice("Added an example #billable line in \u201CBillable log\u201D \u2014 edit it, then run Create invoice.");
+    new import_obsidian7.Notice("Added an example #billable line in \u201CBillable log\u201D \u2014 edit it, then run Create invoice.");
   }
   getClient(id) {
     var _a;
@@ -3661,7 +3738,7 @@ ${line}`);
     var _a;
     const entries = await this.scanner.scan(this.settings.clients);
     if (entries.length === 0) {
-      new import_obsidian6.Notice("No #billable entries found in the vault.");
+      new import_obsidian7.Notice("No #billable entries found in the vault.");
       return;
     }
     const totals = /* @__PURE__ */ new Map();
@@ -3670,8 +3747,102 @@ ${line}`);
     const skipped = this.scanner.lastUnparsed.length;
     const warn = skipped > 0 ? `
 \u26A0 ${skipped} #billable line(s) skipped (fix their time).` : "";
-    new import_obsidian6.Notice(`Unbilled hours:
+    new import_obsidian7.Notice(`Unbilled hours:
 ${summary}${warn}`, 8e3);
+  }
+  // Read every invoice note in the invoice folder as a normalized record. Shared
+  // by reminders, the "mark paid" picker, and the outstanding-invoices summary so
+  // they all agree on which notes are invoices and how their frontmatter is read.
+  collectInvoiceNotes() {
+    var _a;
+    const prefix = (this.invoiceFolderPath() + "/").toLowerCase();
+    const out = [];
+    for (const file of this.app.vault.getMarkdownFiles()) {
+      if (!file.path.toLowerCase().startsWith(prefix)) continue;
+      const meta = readInvoiceMeta((_a = this.app.metadataCache.getFileCache(file)) == null ? void 0 : _a.frontmatter);
+      if (meta) out.push({ file, meta });
+    }
+    return out;
+  }
+  // Set an invoice note's payment status via processFrontMatter (which preserves
+  // the rest of the note and its formatting). Marking paid stamps a paidDate;
+  // reopening clears it. Returns the invoice number for user feedback.
+  async setInvoiceStatus(file, paid) {
+    let number = "";
+    await this.app.fileManager.processFrontMatter(file, (fm) => {
+      const raw = fm.invoice;
+      number = typeof raw === "string" ? raw : typeof raw === "number" ? String(raw) : "";
+      fm.status = paid ? "paid" : "unpaid";
+      if (paid) fm.paidDate = toISODate(/* @__PURE__ */ new Date());
+      else delete fm.paidDate;
+    });
+    return number;
+  }
+  // "Mark invoice as paid": if the active note is an unpaid invoice, mark it
+  // directly; otherwise open a picker of unpaid invoices. This closes the loop the
+  // reminders open — before this, the only way to stop the nag was hand-editing YAML.
+  async markInvoicePaidFlow() {
+    var _a;
+    const active = this.app.workspace.getActiveFile();
+    if (active) {
+      const meta = readInvoiceMeta((_a = this.app.metadataCache.getFileCache(active)) == null ? void 0 : _a.frontmatter);
+      if (meta) {
+        if (meta.status === "paid") {
+          new import_obsidian7.Notice(`${meta.number || active.basename} is already marked paid.`);
+          return;
+        }
+        const number = await this.setInvoiceStatus(active, true);
+        new import_obsidian7.Notice(`Marked ${number || active.basename} paid.`);
+        return;
+      }
+    }
+    const unpaid = this.collectInvoiceNotes().filter((r) => r.meta.status !== "paid");
+    if (unpaid.length === 0) {
+      new import_obsidian7.Notice("No unpaid invoices to mark. Open an invoice note to mark it paid, or create one first.");
+      return;
+    }
+    new InvoicePickerModal(this.app, this, unpaid, async (choice) => {
+      const number = await this.setInvoiceStatus(choice.file, true);
+      new import_obsidian7.Notice(`Marked ${number || choice.file.basename} paid.`);
+    }).open();
+  }
+  // "Mark invoice as unpaid (reopen)": reopens the invoice note in the active tab
+  // so its reminders resume (e.g. a payment fell through). Active-file-only to keep
+  // an accidental un-settling of the wrong invoice out of a fuzzy picker.
+  async reopenActiveInvoice() {
+    var _a;
+    const active = this.app.workspace.getActiveFile();
+    const meta = active ? readInvoiceMeta((_a = this.app.metadataCache.getFileCache(active)) == null ? void 0 : _a.frontmatter) : null;
+    if (!active || !meta) {
+      new import_obsidian7.Notice("Open an invoice note first, then run this command to reopen it.");
+      return;
+    }
+    if (meta.status !== "paid") {
+      new import_obsidian7.Notice(`${meta.number || active.basename} is already unpaid.`);
+      return;
+    }
+    const number = await this.setInvoiceStatus(active, false);
+    new import_obsidian7.Notice(`Reopened ${number || active.basename} (marked unpaid).`);
+  }
+  // "Show outstanding invoices": an on-demand receivables snapshot — how many are
+  // unpaid, how many overdue / due soon, and the total owed per currency. Free
+  // (reading frontmatter), complementing the Pro background reminders.
+  showOutstandingInvoices() {
+    const metas = this.collectInvoiceNotes().map((r) => r.meta);
+    const today = toISODate(/* @__PURE__ */ new Date());
+    const soon = addDays(today, this.settings.reminderDaysBefore);
+    const s = summarizeOutstanding(metas, today, soon);
+    if (s.unpaidCount === 0) {
+      new import_obsidian7.Notice(metas.length === 0 ? "No invoices found in the invoice folder yet." : "No outstanding invoices \u2014 all paid. \u{1F389}");
+      return;
+    }
+    const parts = [`Outstanding: ${s.unpaidCount} invoice(s)`];
+    if (s.overdue.length > 0) parts.push(`\u26A0 ${s.overdue.length} overdue`);
+    if (s.dueSoon.length > 0) parts.push(`${s.dueSoon.length} due soon`);
+    if (s.byCurrency.length > 0) {
+      parts.push("Owed: " + s.byCurrency.map((c) => formatMoney(c.total, c.currency)).join(" \xB7 "));
+    }
+    new import_obsidian7.Notice(parts.join("\n"), 1e4);
   }
   // Core: scan → build → mark source entries → write invoice note. The order and
   // locking make double-billing impossible: we reserve a unique number, then
@@ -3763,29 +3934,23 @@ ${summary}${warn}`, 8e3);
       }
       for (const [path, fileEntries] of byPath) {
         const file = this.app.vault.getAbstractFileByPath(path);
-        if (!(file instanceof import_obsidian6.TFile)) continue;
+        if (!(file instanceof import_obsidian7.TFile)) continue;
         const lines = (await this.app.vault.cachedRead(file)).split(/\r?\n/);
         for (const entry of fileEntries) {
           if (entry.line >= lines.length) continue;
           const ln = lines[entry.line];
           if (lineHasInvoiceMarker(ln, pending.number)) continue;
           if (lineMatchesEntry(ln, entry.raw)) continue;
-          new import_obsidian6.Notice(
+          new import_obsidian7.Notice(
             `Invoice ${pending.number} couldn't be auto-recovered: a billable line in "${path}" changed since it was interrupted. Recreate the invoice to reconcile \u2014 your entries are untouched.`,
             12e3
           );
           return;
         }
       }
-      const existing = this.app.vault.getAbstractFileByPath(pending.path);
-      if (!(existing instanceof import_obsidian6.TFile)) {
-        const slash = pending.path.lastIndexOf("/");
-        if (slash > 0) await this.ensureFolder(pending.path.slice(0, slash));
-        await this.app.vault.create(pending.path, pending.markdown);
-      }
       for (const [path, fileEntries] of byPath) {
         const file = this.app.vault.getAbstractFileByPath(path);
-        if (!(file instanceof import_obsidian6.TFile)) continue;
+        if (!(file instanceof import_obsidian7.TFile)) continue;
         await this.app.vault.process(file, (content) => {
           const newline = detectNewline(content);
           const lines = content.split(/\r?\n/);
@@ -3797,7 +3962,13 @@ ${summary}${warn}`, 8e3);
           return lines.join(newline);
         });
       }
-      new import_obsidian6.Notice(`Recovered an interrupted invoice: ${pending.number}.`);
+      const existing = this.app.vault.getAbstractFileByPath(pending.path);
+      if (!(existing instanceof import_obsidian7.TFile)) {
+        const slash = pending.path.lastIndexOf("/");
+        if (slash > 0) await this.ensureFolder(pending.path.slice(0, slash));
+        await this.app.vault.create(pending.path, pending.markdown);
+      }
+      new import_obsidian7.Notice(`Recovered an interrupted invoice: ${pending.number}.`);
       if (this.settings.pendingInvoice === pending) {
         this.settings.pendingInvoice = null;
         await this.saveSettings();
@@ -3811,7 +3982,7 @@ ${summary}${warn}`, 8e3);
   // invoice creation and the reminder scan so they always agree on the location
   // even when the user's setting has a stray slash or an invalid path character.
   invoiceFolderPath() {
-    return (0, import_obsidian6.normalizePath)(safeFolderPath(this.settings.invoiceFolder || "Invoices"));
+    return (0, import_obsidian7.normalizePath)(safeFolderPath(this.settings.invoiceFolder || "Invoices"));
   }
   // Reserve the next invoice number and a non-colliding file path. Increments
   // nextSeq once; if that number's file already exists, BOTH the number and the
@@ -3828,11 +3999,11 @@ ${summary}${warn}`, 8e3);
     );
     this.settings.nextSeq += 1;
     let number = baseNumber;
-    let path = (0, import_obsidian6.normalizePath)(`${folder}/${safeFileName(number)}.md`);
+    let path = (0, import_obsidian7.normalizePath)(`${folder}/${safeFileName(number)}.md`);
     let suffix = 2;
     while (this.app.vault.getAbstractFileByPath(path)) {
       number = `${baseNumber}-${suffix}`;
-      path = (0, import_obsidian6.normalizePath)(`${folder}/${safeFileName(number)}.md`);
+      path = (0, import_obsidian7.normalizePath)(`${folder}/${safeFileName(number)}.md`);
       suffix += 1;
     }
     return { number, path, folder };
@@ -3840,11 +4011,11 @@ ${summary}${warn}`, 8e3);
   // Pro: open a printable HTML invoice in a new window (Print → Save as PDF).
   exportInvoiceHtml(invoice) {
     if (!this.settings.isPro) {
-      new import_obsidian6.Notice("PDF / print export is a Pro feature.");
+      new import_obsidian7.Notice("PDF / print export is a Pro feature.");
       return;
     }
-    if (import_obsidian6.Platform.isMobile) {
-      new import_obsidian6.Notice("PDF / print export is available on desktop only. Open this invoice on desktop to print or save as PDF.");
+    if (import_obsidian7.Platform.isMobile) {
+      new import_obsidian7.Notice("PDF / print export is available on desktop only. Open this invoice on desktop to print or save as PDF.");
       return;
     }
     const html = renderInvoiceHtml(invoice, this.settings.business);
@@ -3852,7 +4023,7 @@ ${summary}${warn}`, 8e3);
     const win = window.open(url, "_blank");
     if (!win) {
       URL.revokeObjectURL(url);
-      new import_obsidian6.Notice("Could not open a print window (popup blocked). Use Ctrl/Cmd+P to print to PDF.");
+      new import_obsidian7.Notice("Could not open a print window (popup blocked). Use Ctrl/Cmd+P to print to PDF.");
       return;
     }
     window.setTimeout(() => URL.revokeObjectURL(url), 6e4);

@@ -27,6 +27,9 @@ Recognized tokens on a `#billable` line:
 When no date token is present, the entry date falls back to the note's frontmatter `date`,
 then a `YYYY-MM-DD` in the filename (daily notes), then the file's modified date.
 
+Billable lines work in bullet lists, checkboxes, or **numbered lists** (`1. #billable …`) —
+the list marker never leaks into the invoice.
+
 Run **Create invoice** (ribbon icon or command palette), pick a client and date range, and
 Invoice Forge collects every matching entry into a numbered invoice note.
 
@@ -35,6 +38,18 @@ work is excluded from later scans, so it **cannot be billed twice**. Lines insid
 blocks and YAML frontmatter are ignored, so example `#billable` lines in your notes are never
 billed — and any `#billable` line Invoice Forge can't parse (e.g. a typo'd time) is surfaced,
 not silently dropped, so tagged work never disappears from an invoice.
+
+## Getting paid
+
+Invoicing is only half the job — collecting is the other half. Invoice Forge tracks it:
+
+- **Mark invoice as paid** — on the open invoice note, or pick from a list of unpaid ones.
+  It stamps `status: paid` and a `paidDate` in the frontmatter (and stops any reminders).
+- **Mark invoice as unpaid (reopen)** — undo the above if a payment falls through.
+- **Show outstanding invoices** — an on-demand snapshot: how many are unpaid, how many are
+  overdue or due soon, and the total owed per currency.
+
+All three are free. The Pro **due-date reminders** add automatic nagging in the background.
 
 ## Free vs Pro
 
@@ -46,6 +61,7 @@ not silently dropped, so tagged work never disappears from an invoice.
 | Client management (rate, currency, address, `#client/<slug>`) | Yes | Yes |
 | Numbered Markdown invoices with line items & totals | Yes | Yes |
 | Payment-status frontmatter (`unpaid/paid/overdue`, Dataview-queryable) | Yes | Yes |
+| Mark invoices paid / reopen, on-demand outstanding summary | Yes | Yes |
 | Source-note billing markers (can't be billed twice) | Yes | Yes |
 | PDF / print export with your logo & business header | No | Yes |
 | Tax (VAT/GST/sales) & per-client currency | No | Yes |
