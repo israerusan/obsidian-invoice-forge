@@ -3,6 +3,23 @@
 All notable changes to Invoice Forge are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [1.4.0] - 2026-07-24
+
+Adds the correction half of the billing lifecycle: voiding a wrong invoice.
+
+### Added
+- **Void invoice (release its billed entries).** A new command deletes an invoice
+  and removes its `[invoice:: …]` marker from every source line, freeing that work
+  to be billed again — no manual note surgery. Run it on the open invoice note or
+  pick one from a list. A confirmation first shows the exact blast radius (how many
+  billable lines across how many notes will be released) before anything is deleted;
+  the invoice note is moved to trash (recoverable), and the invoice number is not
+  reused, so a corrected invoice you create next gets a fresh number.
+  - The marker removal keys on the exact invoice number, so a look-alike number
+    (`INV-1` vs `INV-10`) is never touched, and release runs *before* the note is
+    trashed — a failure mid-void leaves the work billable and the note intact
+    (recoverable) rather than stranding billed work with no invoice.
+
 ## [1.3.0] - 2026-07-24
 
 Closes the billing loop: you can now settle invoices from inside the plugin, and

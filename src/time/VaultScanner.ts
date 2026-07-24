@@ -1,6 +1,6 @@
 import { App, TFile } from "obsidian";
 import type { Client, TimeEntry } from "../model/types";
-import { lineHasInvoiceMarker, lineMatchesEntry, markLineBilled, parseBillableLine, unmarkLineBilled, type ParseContext } from "./entryParser";
+import { lineHasInvoiceMarker, lineMatchesEntry, markLineBilled, parseBillableLine, releaseInvoiceInContent, unmarkLineBilled, type ParseContext } from "./entryParser";
 import { contentLines, frontmatterDate } from "./markdownRegions";
 import { isValidISODate, toISODate } from "../invoice/InvoiceBuilder";
 
@@ -174,6 +174,52 @@ export class VaultScanner {
 			}
 		}
 		return failed;
+	}
+
+	// Find every note carrying THIS invoice's `[invoice:: <number>]` marker, with a
+	// per-note count. Used to show the blast radius before a void is confirmed. Reads
+	// from the in-memory cache so it's cheap even across a large vault.
+	async findInvoiceMarkers(invoiceNumber: string): Promise<{ path: string; count: number }[]> {
+		const hits: { path: string; count: number }[] = [];
+		for (const file of this.app.vault.getMarkdownFiles()) {
+			const content = await this.app.vault.cachedRead(file);
+			if (!/\[invoice::/i.test(content)) continue;
+			let count = 0;
+			for (const line of content.split(/\r?\n/)) if (lineHasInvoiceMarker(line, invoiceNumber)) count++;
+			if (count > 0) hits.push({ path: file.path, count });
+		}
+		return hits;
+	}
+
+	// Strip THIS invoice's marker from every source line in the vault, freeing that
+	// work to be billed again (void / reissue). Keys on the marker value rather than
+	// captured indices — a void happens long after creation, when the journal is gone
+	// — and matches the exact number only, so a look-alike invoice number is never
+	// touched. Each note is rewritten atomically via vault.process with its newline
+	// style preserved; a note that fails to write is reported (not masked) so the
+	// caller can keep the invoice note as the record and ask the user to reconcile.
+	async releaseInvoiceMarkers(invoiceNumber: string): Promise<{ released: number; failedPaths: string[] }> {
+		let released = 0;
+		const failedPaths: string[] = [];
+		for (const file of this.app.vault.getMarkdownFiles()) {
+			const content = await this.app.vault.cachedRead(file);
+			if (!/\[invoice::/i.test(content)) continue;
+			if (!content.split(/\r?\n/).some((line) => lineHasInvoiceMarker(line, invoiceNumber))) continue;
+			try {
+				// Assign (not accumulate) inside the callback so a re-invocation of
+				// vault.process can't double-count this note's released lines.
+				let noteReleased = 0;
+				await this.app.vault.process(file, (current) => {
+					const result = releaseInvoiceInContent(current, invoiceNumber, detectNewline(current));
+					noteReleased = result.released;
+					return result.content;
+				});
+				released += noteReleased;
+			} catch {
+				failedPaths.push(file.path);
+			}
+		}
+		return { released, failedPaths };
 	}
 
 	// Date priority: frontmatter `date` → daily-note date in filename → file mtime.

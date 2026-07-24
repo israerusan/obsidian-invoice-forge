@@ -2270,7 +2270,7 @@ __export(main_exports, {
   default: () => InvoiceForgePlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian7 = require("obsidian");
+var import_obsidian8 = require("obsidian");
 
 // src/settings.ts
 var PRO_PRICE = "$15 one-time";
@@ -3133,6 +3133,17 @@ function unmarkLineBilled(rawLine, invoiceNumber) {
   const re = new RegExp(`\\s*\\[${INVOICE_FIELD}::\\s*${escapeRegExp(invoiceNumber)}\\s*\\]`, "gi");
   return rawLine.replace(re, "");
 }
+function releaseInvoiceInContent(content, invoiceNumber, newline) {
+  const lines = content.split(/\r?\n/);
+  let released = 0;
+  for (let i = 0; i < lines.length; i++) {
+    if (lineHasInvoiceMarker(lines[i], invoiceNumber)) {
+      lines[i] = unmarkLineBilled(lines[i], invoiceNumber);
+      released++;
+    }
+  }
+  return { content: lines.join(newline), released };
+}
 function lineMatchesEntry(rawLine, entryRaw) {
   return rawLine.trimEnd() === entryRaw.trimEnd();
 }
@@ -3329,6 +3340,48 @@ var VaultScanner = class {
       }
     }
     return failed;
+  }
+  // Find every note carrying THIS invoice's `[invoice:: <number>]` marker, with a
+  // per-note count. Used to show the blast radius before a void is confirmed. Reads
+  // from the in-memory cache so it's cheap even across a large vault.
+  async findInvoiceMarkers(invoiceNumber) {
+    const hits = [];
+    for (const file of this.app.vault.getMarkdownFiles()) {
+      const content = await this.app.vault.cachedRead(file);
+      if (!/\[invoice::/i.test(content)) continue;
+      let count = 0;
+      for (const line of content.split(/\r?\n/)) if (lineHasInvoiceMarker(line, invoiceNumber)) count++;
+      if (count > 0) hits.push({ path: file.path, count });
+    }
+    return hits;
+  }
+  // Strip THIS invoice's marker from every source line in the vault, freeing that
+  // work to be billed again (void / reissue). Keys on the marker value rather than
+  // captured indices — a void happens long after creation, when the journal is gone
+  // — and matches the exact number only, so a look-alike invoice number is never
+  // touched. Each note is rewritten atomically via vault.process with its newline
+  // style preserved; a note that fails to write is reported (not masked) so the
+  // caller can keep the invoice note as the record and ask the user to reconcile.
+  async releaseInvoiceMarkers(invoiceNumber) {
+    let released = 0;
+    const failedPaths = [];
+    for (const file of this.app.vault.getMarkdownFiles()) {
+      const content = await this.app.vault.cachedRead(file);
+      if (!/\[invoice::/i.test(content)) continue;
+      if (!content.split(/\r?\n/).some((line) => lineHasInvoiceMarker(line, invoiceNumber))) continue;
+      try {
+        let noteReleased = 0;
+        await this.app.vault.process(file, (current) => {
+          const result = releaseInvoiceInContent(current, invoiceNumber, detectNewline(current));
+          noteReleased = result.released;
+          return result.content;
+        });
+        released += noteReleased;
+      } catch (e) {
+        failedPaths.push(file.path);
+      }
+    }
+    return { released, failedPaths };
   }
   // Date priority: frontmatter `date` → daily-note date in filename → file mtime.
   // The frontmatter date is read from the FRESH content first (the metadataCache
@@ -3611,11 +3664,11 @@ function addDays2(d, days) {
 // src/ui/InvoicePickerModal.ts
 var import_obsidian6 = require("obsidian");
 var InvoicePickerModal = class extends import_obsidian6.FuzzySuggestModal {
-  constructor(app, _plugin, choices, onPick) {
+  constructor(app, _plugin, choices, onPick, placeholder = "Pick an invoice to mark paid\u2026") {
     super(app);
     this.choices = choices;
     this.onPick = onPick;
-    this.setPlaceholder("Pick an invoice to mark paid\u2026");
+    this.setPlaceholder(placeholder);
   }
   getItems() {
     return [...this.choices].sort((a, b) => {
@@ -3637,8 +3690,58 @@ var InvoicePickerModal = class extends import_obsidian6.FuzzySuggestModal {
   }
 };
 
+// src/ui/VoidInvoiceModal.ts
+var import_obsidian7 = require("obsidian");
+var VoidInvoiceModal = class extends import_obsidian7.Modal {
+  constructor(app, plugin, file, meta) {
+    super(app);
+    this.plugin = plugin;
+    this.file = file;
+    this.meta = meta;
+  }
+  onOpen() {
+    const number = this.meta.number || this.file.basename;
+    this.titleEl.setText(`Void ${number}?`);
+    const { contentEl } = this;
+    contentEl.createEl("p", { text: "Counting the source lines this invoice billed\u2026", cls: "if-muted" });
+    void this.renderConfirm(number);
+  }
+  async renderConfirm(number) {
+    let hits = [];
+    try {
+      hits = await this.plugin.scanner.findInvoiceMarkers(this.meta.number);
+    } catch (e) {
+    }
+    const lineCount = hits.reduce((sum, h) => sum + h.count, 0);
+    const { contentEl } = this;
+    contentEl.empty();
+    const notesLabel = `${hits.length} note${hits.length === 1 ? "" : "s"}`;
+    const linesLabel = `${lineCount} billable line${lineCount === 1 ? "" : "s"}`;
+    contentEl.createEl("p", {
+      text: lineCount > 0 ? `This will move the invoice note to trash and remove the [invoice:: ${number}] marker from ${linesLabel} across ${notesLabel}, making that work billable again.` : `This will move the invoice note to trash. No source lines currently carry the [invoice:: ${number}] marker (they may have been edited or deleted), so nothing will be released.`
+    });
+    if (hits.length > 0) {
+      const list = contentEl.createEl("ul", { cls: "if-muted" });
+      for (const h of hits.slice(0, 12)) {
+        list.createEl("li", { text: `${h.path} \u2014 ${h.count} line${h.count === 1 ? "" : "s"}` });
+      }
+      if (hits.length > 12) list.createEl("li", { text: `\u2026and ${hits.length - 12} more` });
+    }
+    contentEl.createEl("p", {
+      text: "The invoice number is not reused \u2014 a corrected invoice you create next gets a new number.",
+      cls: "if-muted"
+    });
+    new import_obsidian7.Setting(contentEl).addButton((b) => b.setButtonText("Cancel").onClick(() => this.close())).addButton(
+      (b) => b.setButtonText("Void invoice").setWarning().onClick(() => {
+        b.setDisabled(true);
+        void this.plugin.voidInvoice(this.file).finally(() => this.close());
+      })
+    );
+  }
+};
+
 // src/main.ts
-var InvoiceForgePlugin = class extends import_obsidian7.Plugin {
+var InvoiceForgePlugin = class extends import_obsidian8.Plugin {
   constructor() {
     super(...arguments);
     this.settings = DEFAULT_SETTINGS;
@@ -3680,6 +3783,11 @@ var InvoiceForgePlugin = class extends import_obsidian7.Plugin {
       name: "Show outstanding invoices",
       callback: () => this.showOutstandingInvoices()
     });
+    this.addCommand({
+      id: "void-invoice",
+      name: "Void invoice (release its billed entries)",
+      callback: () => void this.voidInvoiceFlow()
+    });
     this.addSettingTab(new InvoiceForgeSettingTab(this.app, this));
     this.app.workspace.onLayoutReady(() => {
       void this.recoverPendingInvoice();
@@ -3711,13 +3819,13 @@ var InvoiceForgePlugin = class extends import_obsidian7.Plugin {
     const editor = (_a = this.app.workspace.activeEditor) == null ? void 0 : _a.editor;
     if (editor) {
       editor.replaceSelection(line);
-      new import_obsidian7.Notice("Inserted an example #billable line \u2014 edit it, then run Create invoice.");
+      new import_obsidian8.Notice("Inserted an example #billable line \u2014 edit it, then run Create invoice.");
       return;
     }
-    const path = (0, import_obsidian7.normalizePath)("Billable log.md");
+    const path = (0, import_obsidian8.normalizePath)("Billable log.md");
     const existing = this.app.vault.getAbstractFileByPath(path);
     let file;
-    if (existing instanceof import_obsidian7.TFile) {
+    if (existing instanceof import_obsidian8.TFile) {
       file = existing;
       await this.app.vault.process(file, (content) => `${content.replace(/\s*$/, "")}
 ${line}`);
@@ -3727,7 +3835,7 @@ ${line}`);
 ${line}`);
     }
     await this.app.workspace.getLeaf(true).openFile(file);
-    new import_obsidian7.Notice("Added an example #billable line in \u201CBillable log\u201D \u2014 edit it, then run Create invoice.");
+    new import_obsidian8.Notice("Added an example #billable line in \u201CBillable log\u201D \u2014 edit it, then run Create invoice.");
   }
   getClient(id) {
     var _a;
@@ -3738,7 +3846,7 @@ ${line}`);
     var _a;
     const entries = await this.scanner.scan(this.settings.clients);
     if (entries.length === 0) {
-      new import_obsidian7.Notice("No #billable entries found in the vault.");
+      new import_obsidian8.Notice("No #billable entries found in the vault.");
       return;
     }
     const totals = /* @__PURE__ */ new Map();
@@ -3747,7 +3855,7 @@ ${line}`);
     const skipped = this.scanner.lastUnparsed.length;
     const warn = skipped > 0 ? `
 \u26A0 ${skipped} #billable line(s) skipped (fix their time).` : "";
-    new import_obsidian7.Notice(`Unbilled hours:
+    new import_obsidian8.Notice(`Unbilled hours:
 ${summary}${warn}`, 8e3);
   }
   // Read every invoice note in the invoice folder as a normalized record. Shared
@@ -3788,22 +3896,22 @@ ${summary}${warn}`, 8e3);
       const meta = readInvoiceMeta((_a = this.app.metadataCache.getFileCache(active)) == null ? void 0 : _a.frontmatter);
       if (meta) {
         if (meta.status === "paid") {
-          new import_obsidian7.Notice(`${meta.number || active.basename} is already marked paid.`);
+          new import_obsidian8.Notice(`${meta.number || active.basename} is already marked paid.`);
           return;
         }
         const number = await this.setInvoiceStatus(active, true);
-        new import_obsidian7.Notice(`Marked ${number || active.basename} paid.`);
+        new import_obsidian8.Notice(`Marked ${number || active.basename} paid.`);
         return;
       }
     }
     const unpaid = this.collectInvoiceNotes().filter((r) => r.meta.status !== "paid");
     if (unpaid.length === 0) {
-      new import_obsidian7.Notice("No unpaid invoices to mark. Open an invoice note to mark it paid, or create one first.");
+      new import_obsidian8.Notice("No unpaid invoices to mark. Open an invoice note to mark it paid, or create one first.");
       return;
     }
     new InvoicePickerModal(this.app, this, unpaid, async (choice) => {
       const number = await this.setInvoiceStatus(choice.file, true);
-      new import_obsidian7.Notice(`Marked ${number || choice.file.basename} paid.`);
+      new import_obsidian8.Notice(`Marked ${number || choice.file.basename} paid.`);
     }).open();
   }
   // "Mark invoice as unpaid (reopen)": reopens the invoice note in the active tab
@@ -3814,15 +3922,15 @@ ${summary}${warn}`, 8e3);
     const active = this.app.workspace.getActiveFile();
     const meta = active ? readInvoiceMeta((_a = this.app.metadataCache.getFileCache(active)) == null ? void 0 : _a.frontmatter) : null;
     if (!active || !meta) {
-      new import_obsidian7.Notice("Open an invoice note first, then run this command to reopen it.");
+      new import_obsidian8.Notice("Open an invoice note first, then run this command to reopen it.");
       return;
     }
     if (meta.status !== "paid") {
-      new import_obsidian7.Notice(`${meta.number || active.basename} is already unpaid.`);
+      new import_obsidian8.Notice(`${meta.number || active.basename} is already unpaid.`);
       return;
     }
     const number = await this.setInvoiceStatus(active, false);
-    new import_obsidian7.Notice(`Reopened ${number || active.basename} (marked unpaid).`);
+    new import_obsidian8.Notice(`Reopened ${number || active.basename} (marked unpaid).`);
   }
   // "Show outstanding invoices": an on-demand receivables snapshot — how many are
   // unpaid, how many overdue / due soon, and the total owed per currency. Free
@@ -3833,7 +3941,7 @@ ${summary}${warn}`, 8e3);
     const soon = addDays(today, this.settings.reminderDaysBefore);
     const s = summarizeOutstanding(metas, today, soon);
     if (s.unpaidCount === 0) {
-      new import_obsidian7.Notice(metas.length === 0 ? "No invoices found in the invoice folder yet." : "No outstanding invoices \u2014 all paid. \u{1F389}");
+      new import_obsidian8.Notice(metas.length === 0 ? "No invoices found in the invoice folder yet." : "No outstanding invoices \u2014 all paid. \u{1F389}");
       return;
     }
     const parts = [`Outstanding: ${s.unpaidCount} invoice(s)`];
@@ -3842,7 +3950,68 @@ ${summary}${warn}`, 8e3);
     if (s.byCurrency.length > 0) {
       parts.push("Owed: " + s.byCurrency.map((c) => formatMoney(c.total, c.currency)).join(" \xB7 "));
     }
-    new import_obsidian7.Notice(parts.join("\n"), 1e4);
+    new import_obsidian8.Notice(parts.join("\n"), 1e4);
+  }
+  // "Void invoice": pick the invoice to void (the active note if it's one, else a
+  // picker of all invoices) and open a confirmation showing the blast radius before
+  // anything is deleted.
+  async voidInvoiceFlow() {
+    var _a;
+    const active = this.app.workspace.getActiveFile();
+    const activeMeta = active ? readInvoiceMeta((_a = this.app.metadataCache.getFileCache(active)) == null ? void 0 : _a.frontmatter) : null;
+    if (active && activeMeta) {
+      new VoidInvoiceModal(this.app, this, active, activeMeta).open();
+      return;
+    }
+    const invoices = this.collectInvoiceNotes();
+    if (invoices.length === 0) {
+      new import_obsidian8.Notice("No invoice notes found to void. Open an invoice note, or check your invoice folder.");
+      return;
+    }
+    new InvoicePickerModal(
+      this.app,
+      this,
+      invoices,
+      (choice) => new VoidInvoiceModal(this.app, this, choice.file, choice.meta).open(),
+      "Pick an invoice to void\u2026"
+    ).open();
+  }
+  // Void an invoice note: release its billing markers from every source line, then
+  // trash the note. Ordering is deliberate — releasing FIRST means a mid-void
+  // failure falls toward "markers released, note kept" (recoverable: the work is
+  // billable again and the stale note can be deleted by hand), never "note gone,
+  // markers stuck" (which would strand billable work as un-invoiceable). Runs under
+  // the same lock as create/recovery so it can't race their marker writes.
+  async voidInvoice(file) {
+    var _a, _b;
+    const meta = readInvoiceMeta((_a = this.app.metadataCache.getFileCache(file)) == null ? void 0 : _a.frontmatter);
+    const number = (_b = meta == null ? void 0 : meta.number) != null ? _b : "";
+    if (!number) {
+      new import_obsidian8.Notice("That note isn't a recognizable invoice (no invoice number in its frontmatter).");
+      return;
+    }
+    if (this.creating) {
+      new import_obsidian8.Notice("An invoice is being created or recovered \u2014 try voiding again in a moment.");
+      return;
+    }
+    this.creating = true;
+    try {
+      const { released, failedPaths } = await this.scanner.releaseInvoiceMarkers(number);
+      if (failedPaths.length > 0) {
+        new import_obsidian8.Notice(
+          `Couldn't fully void ${number}: released ${released} line(s), but these notes couldn't be updated: ${failedPaths.join(", ")}. The invoice note was kept \u2014 fix those notes and void again.`,
+          12e3
+        );
+        return;
+      }
+      await this.app.fileManager.trashFile(file);
+      const freed = released === 1 ? "1 entry" : `${released} entries`;
+      new import_obsidian8.Notice(`Voided ${number} \u2014 released ${freed} back to billable and moved the invoice note to trash.`);
+    } catch (error) {
+      new import_obsidian8.Notice(`Could not void ${number}: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      this.creating = false;
+    }
   }
   // Core: scan → build → mark source entries → write invoice note. The order and
   // locking make double-billing impossible: we reserve a unique number, then
@@ -3934,14 +4103,14 @@ ${summary}${warn}`, 8e3);
       }
       for (const [path, fileEntries] of byPath) {
         const file = this.app.vault.getAbstractFileByPath(path);
-        if (!(file instanceof import_obsidian7.TFile)) continue;
+        if (!(file instanceof import_obsidian8.TFile)) continue;
         const lines = (await this.app.vault.cachedRead(file)).split(/\r?\n/);
         for (const entry of fileEntries) {
           if (entry.line >= lines.length) continue;
           const ln = lines[entry.line];
           if (lineHasInvoiceMarker(ln, pending.number)) continue;
           if (lineMatchesEntry(ln, entry.raw)) continue;
-          new import_obsidian7.Notice(
+          new import_obsidian8.Notice(
             `Invoice ${pending.number} couldn't be auto-recovered: a billable line in "${path}" changed since it was interrupted. Recreate the invoice to reconcile \u2014 your entries are untouched.`,
             12e3
           );
@@ -3950,7 +4119,7 @@ ${summary}${warn}`, 8e3);
       }
       for (const [path, fileEntries] of byPath) {
         const file = this.app.vault.getAbstractFileByPath(path);
-        if (!(file instanceof import_obsidian7.TFile)) continue;
+        if (!(file instanceof import_obsidian8.TFile)) continue;
         await this.app.vault.process(file, (content) => {
           const newline = detectNewline(content);
           const lines = content.split(/\r?\n/);
@@ -3963,12 +4132,12 @@ ${summary}${warn}`, 8e3);
         });
       }
       const existing = this.app.vault.getAbstractFileByPath(pending.path);
-      if (!(existing instanceof import_obsidian7.TFile)) {
+      if (!(existing instanceof import_obsidian8.TFile)) {
         const slash = pending.path.lastIndexOf("/");
         if (slash > 0) await this.ensureFolder(pending.path.slice(0, slash));
         await this.app.vault.create(pending.path, pending.markdown);
       }
-      new import_obsidian7.Notice(`Recovered an interrupted invoice: ${pending.number}.`);
+      new import_obsidian8.Notice(`Recovered an interrupted invoice: ${pending.number}.`);
       if (this.settings.pendingInvoice === pending) {
         this.settings.pendingInvoice = null;
         await this.saveSettings();
@@ -3982,7 +4151,7 @@ ${summary}${warn}`, 8e3);
   // invoice creation and the reminder scan so they always agree on the location
   // even when the user's setting has a stray slash or an invalid path character.
   invoiceFolderPath() {
-    return (0, import_obsidian7.normalizePath)(safeFolderPath(this.settings.invoiceFolder || "Invoices"));
+    return (0, import_obsidian8.normalizePath)(safeFolderPath(this.settings.invoiceFolder || "Invoices"));
   }
   // Reserve the next invoice number and a non-colliding file path. Increments
   // nextSeq once; if that number's file already exists, BOTH the number and the
@@ -3999,11 +4168,11 @@ ${summary}${warn}`, 8e3);
     );
     this.settings.nextSeq += 1;
     let number = baseNumber;
-    let path = (0, import_obsidian7.normalizePath)(`${folder}/${safeFileName(number)}.md`);
+    let path = (0, import_obsidian8.normalizePath)(`${folder}/${safeFileName(number)}.md`);
     let suffix = 2;
     while (this.app.vault.getAbstractFileByPath(path)) {
       number = `${baseNumber}-${suffix}`;
-      path = (0, import_obsidian7.normalizePath)(`${folder}/${safeFileName(number)}.md`);
+      path = (0, import_obsidian8.normalizePath)(`${folder}/${safeFileName(number)}.md`);
       suffix += 1;
     }
     return { number, path, folder };
@@ -4011,11 +4180,11 @@ ${summary}${warn}`, 8e3);
   // Pro: open a printable HTML invoice in a new window (Print → Save as PDF).
   exportInvoiceHtml(invoice) {
     if (!this.settings.isPro) {
-      new import_obsidian7.Notice("PDF / print export is a Pro feature.");
+      new import_obsidian8.Notice("PDF / print export is a Pro feature.");
       return;
     }
-    if (import_obsidian7.Platform.isMobile) {
-      new import_obsidian7.Notice("PDF / print export is available on desktop only. Open this invoice on desktop to print or save as PDF.");
+    if (import_obsidian8.Platform.isMobile) {
+      new import_obsidian8.Notice("PDF / print export is available on desktop only. Open this invoice on desktop to print or save as PDF.");
       return;
     }
     const html = renderInvoiceHtml(invoice, this.settings.business);
@@ -4023,7 +4192,7 @@ ${summary}${warn}`, 8e3);
     const win = window.open(url, "_blank");
     if (!win) {
       URL.revokeObjectURL(url);
-      new import_obsidian7.Notice("Could not open a print window (popup blocked). Use Ctrl/Cmd+P to print to PDF.");
+      new import_obsidian8.Notice("Could not open a print window (popup blocked). Use Ctrl/Cmd+P to print to PDF.");
       return;
     }
     window.setTimeout(() => URL.revokeObjectURL(url), 6e4);

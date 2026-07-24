@@ -12,6 +12,7 @@ import { formatInvoiceNumber } from "./invoice/numbering";
 import { readInvoiceMeta, summarizeOutstanding, type InvoiceMeta } from "./invoice/invoiceNotes";
 import { ReminderManager } from "./reminders/ReminderManager";
 import { InvoicePickerModal } from "./ui/InvoicePickerModal";
+import { VoidInvoiceModal } from "./ui/VoidInvoiceModal";
 import type { BusinessProfile, Client, Invoice } from "./model/types";
 
 export default class InvoiceForgePlugin extends Plugin {
@@ -63,6 +64,12 @@ export default class InvoiceForgePlugin extends Plugin {
 			id: "show-outstanding-invoices",
 			name: "Show outstanding invoices",
 			callback: () => this.showOutstandingInvoices(),
+		});
+
+		this.addCommand({
+			id: "void-invoice",
+			name: "Void invoice (release its billed entries)",
+			callback: () => void this.voidInvoiceFlow(),
 		});
 
 		this.addSettingTab(new InvoiceForgeSettingTab(this.app, this));
@@ -233,6 +240,70 @@ export default class InvoiceForgePlugin extends Plugin {
 			parts.push("Owed: " + s.byCurrency.map((c) => formatMoney(c.total, c.currency)).join(" · "));
 		}
 		new Notice(parts.join("\n"), 10000);
+	}
+
+	// "Void invoice": pick the invoice to void (the active note if it's one, else a
+	// picker of all invoices) and open a confirmation showing the blast radius before
+	// anything is deleted.
+	async voidInvoiceFlow(): Promise<void> {
+		const active = this.app.workspace.getActiveFile();
+		const activeMeta = active ? readInvoiceMeta(this.app.metadataCache.getFileCache(active)?.frontmatter) : null;
+		if (active && activeMeta) {
+			new VoidInvoiceModal(this.app, this, active, activeMeta).open();
+			return;
+		}
+
+		const invoices = this.collectInvoiceNotes();
+		if (invoices.length === 0) {
+			new Notice("No invoice notes found to void. Open an invoice note, or check your invoice folder.");
+			return;
+		}
+		new InvoicePickerModal(
+			this.app,
+			this,
+			invoices,
+			(choice) => new VoidInvoiceModal(this.app, this, choice.file, choice.meta).open(),
+			"Pick an invoice to void…"
+		).open();
+	}
+
+	// Void an invoice note: release its billing markers from every source line, then
+	// trash the note. Ordering is deliberate — releasing FIRST means a mid-void
+	// failure falls toward "markers released, note kept" (recoverable: the work is
+	// billable again and the stale note can be deleted by hand), never "note gone,
+	// markers stuck" (which would strand billable work as un-invoiceable). Runs under
+	// the same lock as create/recovery so it can't race their marker writes.
+	async voidInvoice(file: TFile): Promise<void> {
+		const meta = readInvoiceMeta(this.app.metadataCache.getFileCache(file)?.frontmatter);
+		const number = meta?.number ?? "";
+		if (!number) {
+			new Notice("That note isn't a recognizable invoice (no invoice number in its frontmatter).");
+			return;
+		}
+		if (this.creating) {
+			new Notice("An invoice is being created or recovered — try voiding again in a moment.");
+			return;
+		}
+		this.creating = true;
+		try {
+			const { released, failedPaths } = await this.scanner.releaseInvoiceMarkers(number);
+			if (failedPaths.length > 0) {
+				// Keep the invoice note as the record so nothing is lost; the user can
+				// fix the unwritable notes and void again.
+				new Notice(
+					`Couldn't fully void ${number}: released ${released} line(s), but these notes couldn't be updated: ${failedPaths.join(", ")}. The invoice note was kept — fix those notes and void again.`,
+					12000
+				);
+				return;
+			}
+			await this.app.fileManager.trashFile(file);
+			const freed = released === 1 ? "1 entry" : `${released} entries`;
+			new Notice(`Voided ${number} — released ${freed} back to billable and moved the invoice note to trash.`);
+		} catch (error) {
+			new Notice(`Could not void ${number}: ${error instanceof Error ? error.message : String(error)}`);
+		} finally {
+			this.creating = false;
+		}
 	}
 
 	// Core: scan → build → mark source entries → write invoice note. The order and

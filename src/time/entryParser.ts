@@ -194,6 +194,29 @@ export function unmarkLineBilled(rawLine: string, invoiceNumber: string): string
 	return rawLine.replace(re, "");
 }
 
+// Strip a specific invoice's marker from EVERY line of a note's content — the core
+// of "void invoice", which frees that work to be billed again. Unlike the
+// rollback path this keys on the marker VALUE (not captured line indices), because
+// a void happens long after creation when the crash-recovery journal is gone. Only
+// the exact invoice number is matched (via unmarkLineBilled/lineHasInvoiceMarker),
+// so a look-alike number like "INV-1" vs "INV-10" is never touched. The caller
+// supplies the note's newline style so it is preserved on write.
+export function releaseInvoiceInContent(
+	content: string,
+	invoiceNumber: string,
+	newline: string
+): { content: string; released: number } {
+	const lines = content.split(/\r?\n/);
+	let released = 0;
+	for (let i = 0; i < lines.length; i++) {
+		if (lineHasInvoiceMarker(lines[i], invoiceNumber)) {
+			lines[i] = unmarkLineBilled(lines[i], invoiceNumber);
+			released++;
+		}
+	}
+	return { content: lines.join(newline), released };
+}
+
 // Confirm a line is byte-for-byte the exact source line captured at scan time
 // (ignoring only trailing whitespace). Comparing the whole line — not just
 // hours+description — means ANY post-preview change (client, date, rate, hours,

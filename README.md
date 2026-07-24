@@ -48,8 +48,12 @@ Invoicing is only half the job — collecting is the other half. Invoice Forge t
 - **Mark invoice as unpaid (reopen)** — undo the above if a payment falls through.
 - **Show outstanding invoices** — an on-demand snapshot: how many are unpaid, how many are
   overdue or due soon, and the total owed per currency.
+- **Void invoice** — sent the wrong invoice? Voiding trashes the invoice note and removes its
+  `[invoice:: …]` marker from every source line, so that work is billable again — then just
+  run **Create invoice** to reissue a corrected one (with a fresh number). A confirmation
+  shows exactly how many lines will be released before anything is deleted.
 
-All three are free. The Pro **due-date reminders** add automatic nagging in the background.
+All four are free. The Pro **due-date reminders** add automatic nagging in the background.
 
 ## Free vs Pro
 
@@ -62,6 +66,7 @@ All three are free. The Pro **due-date reminders** add automatic nagging in the 
 | Numbered Markdown invoices with line items & totals | Yes | Yes |
 | Payment-status frontmatter (`unpaid/paid/overdue`, Dataview-queryable) | Yes | Yes |
 | Mark invoices paid / reopen, on-demand outstanding summary | Yes | Yes |
+| Void & reissue (release billed lines for correction) | Yes | Yes |
 | Source-note billing markers (can't be billed twice) | Yes | Yes |
 | PDF / print export with your logo & business header | No | Yes |
 | Tax (VAT/GST/sales) & per-client currency | No | Yes |

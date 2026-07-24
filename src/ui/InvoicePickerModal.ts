@@ -16,10 +16,11 @@ export class InvoicePickerModal extends FuzzySuggestModal<InvoiceChoice> {
 		app: App,
 		_plugin: InvoiceForgePlugin,
 		private choices: InvoiceChoice[],
-		private onPick: (choice: InvoiceChoice) => void | Promise<void>
+		private onPick: (choice: InvoiceChoice) => void | Promise<void>,
+		placeholder = "Pick an invoice to mark paid…"
 	) {
 		super(app);
-		this.setPlaceholder("Pick an invoice to mark paid…");
+		this.setPlaceholder(placeholder);
 	}
 
 	getItems(): InvoiceChoice[] {

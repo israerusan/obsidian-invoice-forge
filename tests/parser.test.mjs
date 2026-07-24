@@ -5,6 +5,7 @@ import {
 	lineMatchesEntry,
 	lineHasInvoiceMarker,
 	parseBillableLine,
+	releaseInvoiceInContent,
 	contentLines,
 	frontmatterDate,
 	slugify,
@@ -90,6 +91,31 @@ const marked = markLineBilled(original, "INV-2026-0001");
 assert.equal(unmarkLineBilled(marked, "INV-2026-0001"), original, "unmark restores the original line");
 // Unmark only removes the matching invoice number, not a different one.
 assert.equal(unmarkLineBilled(marked, "INV-9999"), marked, "unmark leaves a different invoice's marker");
+
+// --- releaseInvoiceInContent (void): strips exactly one invoice's marker ---
+const voidDoc = [
+	"- #billable #client/acme 1h A [invoice:: INV-2026-0001]",
+	"- #billable #client/acme 2h B [invoice:: INV-2026-0001]",
+	"- #billable #client/acme 3h C [invoice:: INV-2026-0010]", // look-alike, must survive
+	"- plain line",
+].join("\n");
+const released = releaseInvoiceInContent(voidDoc, "INV-2026-0001", "\n");
+assert.equal(released.released, 2, "releases exactly the two INV-2026-0001 lines");
+assert.equal(
+	released.content,
+	["- #billable #client/acme 1h A", "- #billable #client/acme 2h B", "- #billable #client/acme 3h C [invoice:: INV-2026-0010]", "- plain line"].join("\n"),
+	"only the target number is stripped; the look-alike INV-2026-0010 is untouched"
+);
+// Released lines are billable again (round-trips back through the parser).
+const reparsed = parseBillableLine(released.content.split("\n")[0], ctx);
+assert.ok(reparsed && reparsed.hours === 1, "a released line parses as billable again");
+// Nothing to release → content unchanged, count 0.
+const none = releaseInvoiceInContent("- #billable 1h no marker\n- plain", "INV-9999", "\n");
+assert.equal(none.released, 0);
+assert.equal(none.content, "- #billable 1h no marker\n- plain", "no marker → content unchanged");
+// CRLF content: the caller's newline is preserved on rejoin.
+const crlf = releaseInvoiceInContent("- #billable 1h X [invoice:: INV-1]\r\n- plain", "INV-1", "\r\n");
+assert.equal(crlf.content, "- #billable 1h X\r\n- plain", "CRLF preserved on release");
 
 // --- A date embedded in prose must NOT hijack the entry date or the description ---
 const prose = parseBillableLine("- #billable #client/acme 2h fixed bug 2026-01-15 regression", {
