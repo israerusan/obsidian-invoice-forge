@@ -85,7 +85,11 @@ Invoice Forge is local-first: it reads and writes notes in your vault and **neve
 
 Capture, scan, and invoice generation work on **desktop and mobile**. PDF export is a desktop step (it opens a printable invoice for Print → Save as PDF).
 
-## Install (manual)
+## Install
+
+**Community plugins (recommended):** open **Settings → Community plugins**, search **Invoice Forge**, and install it — one click, auto-updates. Then open Settings → Invoice Forge to add your business details and clients.
+
+**Manual install:**
 
 1. Copy `main.js`, `manifest.json`, and `styles.css` into `.obsidian/plugins/invoice-forge/`
 2. Enable **Invoice Forge** in Settings → Community plugins
