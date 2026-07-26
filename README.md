@@ -4,6 +4,11 @@
 
 Find the billable work hidden in your daily notes and turn it into a client invoice — without re-entering it in another app. Built for the solo consultant or freelancer who bills hourly and already lives in their vault.
 
+<!-- SCREENSHOT SLOT — drop a real capture here to lift conversions.
+     ![#billable lines in a daily note on the left, the generated numbered invoice note on the right](docs/assets/hero.png)
+     Suggested shot: split view — tagged #billable lines on the left, the finished invoice note (line items + total) on the right. Save as docs/assets/hero.png -->
+
+
 ## How it works
 
 Add a billable line anywhere in your notes (daily notes work great):
@@ -72,7 +77,7 @@ All four are free. The Pro **due-date reminders** add automatic nagging in the b
 | Tax (VAT/GST/sales) & per-client currency | No | Yes |
 | Due-date reminders for unpaid / overdue invoices | No | Yes |
 
-License keys are verified **offline** (Ed25519) — no account, server, or subscription.
+Purchase: [Buy Me a Coffee — Invoice Forge Pro](https://buymeacoffee.com/vaultspotlight/e/554726). License keys are verified **offline** (Ed25519) — no account, server, or subscription.
 
 ## Privacy & platform
 
@@ -89,7 +94,7 @@ Capture, scan, and invoice generation work on **desktop and mobile**. PDF export
 ## Activate Pro
 
 1. Purchase Invoice Forge Pro ($15 one-time) — the buy link is in the plugin's settings tab under **License key**, or on [Buy Me a Coffee](https://buymeacoffee.com/vaultspotlight/e/554726)
-2. You will receive a license key by email
+2. Your license key is emailed to you **automatically, within seconds** — delivery is fully automated, no waiting
 3. Open Obsidian → Settings → Invoice Forge
 4. Paste your license key — Pro unlocks immediately (offline verification)
 
